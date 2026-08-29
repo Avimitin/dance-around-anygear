@@ -92,6 +92,13 @@ size and SHA-256. Prepare them in the ignored cache with:
 The runtime DLL and license are copied into SteamVR release archives; neither
 is committed to the source tree.
 
+The D4xx native evaluation stack is pinned separately in
+[realsense-d4xx.md](../backends/realsense-d4xx.md): librealsense 2.50.0,
+TensorRT 7.2.1.6, CUDA 11.0 Update 1, and cuDNN 8.0.4. NVIDIA download terms
+require the user or release maintainer to acquire the NVIDIA archives. No D4xx
+release may be published until the exact input and extracted DLL hashes have
+been recorded in `dependency-lock.json` and the staging script verifies them.
+
 ## Reproducibility check
 
 Run two isolated builds from the same source/toolchain and require an exact DLL

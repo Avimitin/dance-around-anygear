@@ -93,7 +93,19 @@ Expected markers include the OpenVR version, a role table containing `waist`,
 transition. A missing role is an explicit not-tracked result. The command does
 not start Unity, but OpenVR initialization may connect to or start SteamVR.
 
-## 5. Full game check
+## 5. Isolated RealSense D4xx dependency check
+
+Before testing a D430/D4xx path, install and verify the exact versions in
+[RealSense D4xx native runtime setup](../backends/realsense-d4xx.md). In
+particular, `nvidia-smi` proves only that the display driver is present; it
+does not install CUDA Runtime, cuDNN, or TensorRT.
+
+Do not start Unity until both D430 devices stream Depth Z16 and Infrared Y8 in
+RealSense Viewer and the TensorRT 7.2.1.6 directory contains genuine runtime
+DLLs. A local placeholder DLL shadows a system installation and must never be
+treated as a successful dependency check.
+
+## 6. Full game check
 
 Install and generate the short launcher without running it:
 

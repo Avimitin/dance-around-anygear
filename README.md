@@ -75,6 +75,12 @@ Prepare the pinned OpenVR SDK/runtime and package the SteamVR backend:
 ./tools/package.ps1 -Backend steamvr
 ```
 
+The native D4xx evaluation path additionally depends on an exact legacy
+NVIDIA inference stack. Follow the complete version, download, installation,
+layout, and verification guide in
+[RealSense D4xx native runtime setup](docs/backends/realsense-d4xx.md). Do not
+substitute a current TensorRT release for TensorRT 7.2.1.6.
+
 The MediaPipe runtime and Pose Landmarker model are Apache-2.0 and pinned by
 hash. Their upstream license and notice accompany the webcam archive.
 
@@ -148,6 +154,7 @@ values, DANCE aROUND keeps Spice's aspect-correct centered default.
 - [Runtime debugging](docs/development/debugging.md)
 - [Release workflow](docs/development/releases.md)
 - [MediaPipe webcam backend](docs/backends/mediapipe-webcam.md)
+- [RealSense D4xx native dependencies](docs/backends/realsense-d4xx.md)
 - [SteamVR backend](docs/backends/steamvr.md)
 - [Spice integration](integration/spice2x/README.md)
 

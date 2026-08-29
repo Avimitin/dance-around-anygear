@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | Native D435 | RealSense D435 | Vendor VP4U | Vendor-defined | Not an Anygear target |
 | Kinect v1 | Kinect for Windows SDK 1.8 NUI | Hardware skeleton (20 joints) | No | Validated in game |
-| D4xx | librealsense depth/IR | To be selected per model | Expected no | Planned |
+| D4xx | librealsense 2.50.0 depth/IR | Native pose path under evaluation | No | Dependency stack identified; hardware validation in progress |
 | Webcam | Media Foundation | MediaPipe v1 Pose Landmarker Lite (33 joints) | Yes | Model/ABI validated; USB and in-game validation pending |
 | SteamVR | OpenVR standing-space tracked devices | HMD/controllers plus role-assigned body trackers | No | Mapping/ABI validated; hardware and in-game validation pending |
 
@@ -35,6 +35,18 @@ game. Changes require both isolated harness evidence and an in-game run.
 - Python, OpenCV, helper processes, and runtime downloads are not required.
 - Current development host enumerated zero USB cameras, so real capture,
   performer/avatar orientation, and full game calibration remain unvalidated.
+
+## D4xx evaluation profile
+
+- Two physical D430 depth modules are visible to Windows.
+- RGB is disabled; the intended streams are Depth Z16 and Infrared Y8.
+- The matching native RealSense C API reports `25000` (librealsense 2.50.0).
+- Native pose inference requires TensorRT 7.2.1.6, CUDA 11.0 Update 1, and
+  cuDNN 8.0.4. These are application dependencies, not display-driver files.
+- The complete download and installation procedure is in
+  [realsense-d4xx.md](backends/realsense-d4xx.md).
+- Full in-game validation is pending restoration of the genuine NVIDIA
+  runtime; placeholder DLLs are not accepted as evidence.
 
 ## SteamVR validated profile
 
