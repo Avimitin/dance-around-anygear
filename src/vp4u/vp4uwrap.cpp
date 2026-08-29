@@ -3,6 +3,7 @@
 #include "webcam.h"
 #include "pose.h"
 #include "kinect.h"
+#include "steamvr.h"
 
 #include <algorithm>
 #include <array>
@@ -105,6 +106,15 @@ struct Config {
     int   kinect_body_hold_ms = 500;
     float kinect_max_joint_speed_mps = 8.0f;
     float kinect_bone_length_tolerance = 0.35f;
+    bool  steamvr_auto_center = true;
+    bool  steamvr_face_to_face = true;
+    bool  steamvr_require_waist = true;
+    bool  steamvr_require_feet = true;
+    int   steamvr_body_hold_ms = 250;
+    float steamvr_stage_hip_x = 0.55f;
+    float steamvr_stage_hip_y = 0.0f;
+    float steamvr_stage_hip_z = 2.30f;
+    std::string steamvr_runtime_dir;
     float hip_stage_x = 0.9f, hip_stage_y = 1.0f, hip_stage_z = 0.75f;
     float torso_len_m = 0.52f;
     float z_damping = 0.7f;
@@ -207,9 +217,18 @@ static void config_apply_json(const std::string& js) {
     if (json_find_number(sub, "KinectBodyHoldMs", &v)) g_cfg.kinect_body_hold_ms = (int)v;
     if (json_find_number(sub, "KinectMaxJointSpeedMps", &v)) g_cfg.kinect_max_joint_speed_mps = (float)v;
     if (json_find_number(sub, "KinectBoneLengthTolerance", &v)) g_cfg.kinect_bone_length_tolerance = (float)v;
+    if (json_find_number(sub, "SteamVrAutoCenter", &v)) g_cfg.steamvr_auto_center = (v != 0);
+    if (json_find_number(sub, "SteamVrFaceToFace", &v)) g_cfg.steamvr_face_to_face = (v != 0);
+    if (json_find_number(sub, "SteamVrRequireWaist", &v)) g_cfg.steamvr_require_waist = (v != 0);
+    if (json_find_number(sub, "SteamVrRequireFeet", &v)) g_cfg.steamvr_require_feet = (v != 0);
+    if (json_find_number(sub, "SteamVrBodyHoldMs", &v)) g_cfg.steamvr_body_hold_ms = (int)v;
+    if (json_find_number(sub, "SteamVrStageHipX", &v)) g_cfg.steamvr_stage_hip_x = (float)v;
+    if (json_find_number(sub, "SteamVrStageHipY", &v)) g_cfg.steamvr_stage_hip_y = (float)v;
+    if (json_find_number(sub, "SteamVrStageHipZ", &v)) g_cfg.steamvr_stage_hip_z = (float)v;
     std::string s;
     if (json_find_string(sub, "ModelPath", &s)) g_cfg.model_path = s;
     if (json_find_string(sub, "RuntimeDir", &s)) g_cfg.runtime_dir = s;
+    if (json_find_string(sub, "SteamVrRuntimeDir", &s)) g_cfg.steamvr_runtime_dir = s;
     if (json_find_number(sub, "MirrorX", &v)) g_cfg.mirror_x = (v != 0);
 }
 
@@ -271,12 +290,21 @@ static void config_load_file(const char* path) {
         g_cfg.kinect_max_joint_speed_mps, 1.0f, 20.0f);
     g_cfg.kinect_bone_length_tolerance = std::clamp(
         g_cfg.kinect_bone_length_tolerance, 0.10f, 1.00f);
+    g_cfg.steamvr_body_hold_ms = std::clamp(
+        g_cfg.steamvr_body_hold_ms, 0, 2000);
 #if defined(ANYGEAR_BACKEND_KINECT)
     log("runtime config: Kinect stable profile %d Hz, preview %d Hz, pool %d, "
         "no-color=%d, face-to-face=%d, ParsedBody=%zu bytes",
         g_cfg.capture_fps, g_cfg.preview_fps, g_cfg.image_pool_max,
         (int)!g_cfg.kinect_use_color, (int)g_cfg.kinect_face_to_face,
         sizeof(ParsedBody));
+#elif defined(ANYGEAR_BACKEND_STEAMVR)
+    log("runtime config: SteamVR tracked-pose profile %d Hz, preview %d Hz, "
+        "pool %d, strict-waist=%d, strict-feet=%d, face-to-face=%d, "
+        "ParsedBody=%zu bytes",
+        g_cfg.capture_fps, g_cfg.preview_fps, g_cfg.image_pool_max,
+        (int)g_cfg.steamvr_require_waist, (int)g_cfg.steamvr_require_feet,
+        (int)g_cfg.steamvr_face_to_face, sizeof(ParsedBody));
 #else
     log("runtime config: MediaPipe webcam profile %d Hz, preview %d Hz, "
         "pool %d, camera=%d, frame=%dx%d, ParsedBody=%zu bytes",
@@ -409,23 +437,25 @@ static PoseEngine g_pose;
 static std::atomic<bool> g_poseOk{false};
 
 // ------------------------------------------------------------ backend ----
-// VP4U_BACKEND=kinect (case-insensitive) selects the Kinect v1 sensor:
-// NUI skeleton tracking instead of webcam + MediaPipe. Anything else (or
-// unset) keeps the webcam default. An explicitly selected backend never falls
-// through to a different physical device on failure.
-enum class Backend { Webcam, Kinect };
+// Release targets select one sensor at compile time. An explicitly selected
+// backend never falls through to another physical device on failure.
+enum class Backend { Webcam, Kinect, SteamVr };
 
 static Backend backend_from_env() {
 #if defined(ANYGEAR_BACKEND_KINECT)
     return Backend::Kinect;
 #elif defined(ANYGEAR_BACKEND_WEBCAM)
     return Backend::Webcam;
+#elif defined(ANYGEAR_BACKEND_STEAMVR)
+    return Backend::SteamVr;
 #else
     const char* e = std::getenv("VP4U_BACKEND");
     if (!e) return Backend::Webcam;
     std::string v(e);
     for (char& c : v) c = (char)std::tolower((unsigned char)c);
-    return v == "kinect" ? Backend::Kinect : Backend::Webcam;
+    if (v == "kinect") return Backend::Kinect;
+    if (v == "steamvr") return Backend::SteamVr;
+    return Backend::Webcam;
 #endif
 }
 
@@ -434,20 +464,51 @@ static Backend backend() {
     return b;
 }
 
-// Non-null while the Kinect backend is actually running.
+// Non-null while the corresponding hardware-skeleton backend is running.
 static std::shared_ptr<KinectSource> g_kinect;
+static std::shared_ptr<SteamVrSource> g_steamvr;
+
+static bool hardware_skeleton_active() {
+    return g_kinect != nullptr || g_steamvr != nullptr;
+}
+
+static bool hardware_has_color_stream() {
+    return g_kinect && g_kinect->has_color_stream();
+}
+
+static bool hardware_wait_for_skeleton(PoseResult* out, uint64_t* generation,
+                                       int timeout_ms) {
+    if (g_kinect) {
+        return g_kinect->wait_for_skeleton(out, generation, timeout_ms);
+    }
+    if (g_steamvr) {
+        return g_steamvr->wait_for_skeleton(out, generation, timeout_ms);
+    }
+    return false;
+}
+
+static const char* hardware_name() {
+    return g_kinect ? "Kinect" : (g_steamvr ? "SteamVR" : "hardware");
+}
+
+static int hardware_body_hold_ms() {
+    return g_kinect ? g_cfg.kinect_body_hold_ms : g_cfg.steamvr_body_hold_ms;
+}
 
 // Unified frame-source access for the worker loops.
 static int src_native_width() {
     if (g_kinect) return g_kinect->native_width();
+    if (g_steamvr) return g_steamvr->native_width();
     return g_cam ? g_cam->native_width() : 0;
 }
 static int src_native_height() {
     if (g_kinect) return g_kinect->native_height();
+    if (g_steamvr) return g_steamvr->native_height();
     return g_cam ? g_cam->native_height() : 0;
 }
 static void src_get_frame(std::vector<uint8_t>& out, int w, int h) {
     if (g_kinect) g_kinect->get_frame_bgr8(out, w, h);
+    else if (g_steamvr) g_steamvr->get_frame_bgr8(out, w, h);
     else if (g_cam) g_cam->get_frame_bgr8(out, w, h);
 }
 
@@ -506,6 +567,13 @@ static void paths_default(std::wstring* runtime_dir, std::string* model_path) {
         : g_cfg.model_path;
 }
 
+static std::wstring steamvr_runtime_default() {
+    const std::string directory = g_cfg.steamvr_runtime_dir.empty()
+        ? dll_dir_w() + "\\dance_around_anygear_steamvr"
+        : g_cfg.steamvr_runtime_dir;
+    return std::wstring(directory.begin(), directory.end());
+}
+
 // ------------------------------------------------------- joint mapping ----
 static void map_pose_to_body(const PoseResult& pr, ParsedBody& body) {
     body.TrackingState = 2;
@@ -549,7 +617,7 @@ static void map_pose_to_body(const PoseResult& pr, ParsedBody& body) {
     set_mp(JT_Nose, MP_Nose);                                          // 25
     // Kinect has a real head center represented by the midpoint of our
     // synthesized ears. Keep the legacy nose extrapolation for webcam pose.
-    if (g_kinect) {
+    if (hardware_skeleton_active()) {
         set_mid(JT_Head, MP_LeftEar, MP_RightEar);
     } else {
         float nx = pr.world[MP_Nose][0], ny = pr.world[MP_Nose][1], nz = pr.world[MP_Nose][2];
@@ -611,7 +679,8 @@ static void preview_loop(OnVideoFrameCallback lcb, void* lctx,
                          OnVideoFrameCallback rcb, void* rctx) {
     log("preview: started (left %p right %p)", (void*)lcb, (void*)rcb);
     std::vector<uint8_t> frame;
-    const bool skeleton_only = g_kinect && !g_kinect->has_color_stream();
+    const bool skeleton_only = hardware_skeleton_active() &&
+                               !hardware_has_color_stream();
     const int effective_preview_fps = skeleton_only ? 1 : g_cfg.preview_fps;
     const auto interval = std::chrono::microseconds(
         1000000 / std::max(1, effective_preview_fps));
@@ -622,17 +691,17 @@ static void preview_loop(OnVideoFrameCallback lcb, void* lctx,
     }
     while (!g_previewWk.stop) {
         int w = skeleton_only ? 1
-            : (g_kinect ? src_native_width() : g_cfg.capture_w);
+            : (hardware_skeleton_active() ? src_native_width() : g_cfg.capture_w);
         int h = skeleton_only ? 1
-            : (g_kinect ? src_native_height() : g_cfg.capture_h);
+            : (hardware_skeleton_active() ? src_native_height() : g_cfg.capture_h);
         if (w <= 0) w = 640;
         if (h <= 0) h = 480;
         if (!skeleton_only) src_get_frame(frame, w, h);
         const uint8_t* pixels = skeleton_only ? black_pixel
             : (frame.empty() ? nullptr : frame.data());
         uint64_t ts = qpc_now_us();
-        if (g_kinect) {
-            // A Kinect is a single source. Both VP4U "eyes" may share this
+        if (hardware_skeleton_active()) {
+            // A skeleton backend is a single source. Both VP4U "eyes" may share this
             // process-lifetime descriptor; ReleaseImageDesc is intentionally
             // a no-op for reusable slots.
             ImageDesc* shared = make_reusable_image_desc(2, pixels, w, h);
@@ -686,46 +755,47 @@ static void transform_kinect_pose_to_stage(PoseResult& pose) {
 
 // ------------------------------------------------------ analysis worker ----
 static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
+    const bool hardware = hardware_skeleton_active();
     log("runtime 5/5: analysis started (%s)", g_kinect ? "kinect NUI skeleton"
-        : (g_poseOk ? "MediaPipe Pose Landmarker"
-                    : "MediaPipe unavailable (empty frames)"));
+        : (g_steamvr ? "SteamVR tracked poses"
+                     : (g_poseOk ? "MediaPipe Pose Landmarker"
+                                 : "MediaPipe unavailable (empty frames)")));
     std::vector<uint8_t> frame;
     ParsedBody body;
     make_empty_body(body, 0);
     int miss = 999; // frames since last valid detection
     uint64_t frame_no = 0;
     uint64_t last_detected_ms = 0;
-    uint64_t kinect_generation = 0;
-    bool last_kinect_valid = false;
+    uint64_t hardware_generation = 0;
+    bool last_hardware_valid = false;
     bool last_webcam_valid = false;
     auto next_webcam_tick = std::chrono::steady_clock::now();
     static const uint8_t black_pixel[3] = {0, 0, 0};
     while (!g_analysisWk.stop) {
-        int w = g_kinect ? src_native_width() : g_cfg.capture_w;
-        int h = g_kinect ? src_native_height() : g_cfg.capture_h;
+        int w = hardware ? src_native_width() : g_cfg.capture_w;
+        int h = hardware ? src_native_height() : g_cfg.capture_h;
         if (w <= 0) w = 640;
         if (h <= 0) h = 480;
 
         bool detected = false;
-        if (g_kinect) {
-            // kinect backend: skeleton comes straight from NUI tracking,
-            // no image-based inference. Wait for a NEW NUI generation rather
-            // than repeatedly submitting the last pose on a separate timer.
+        if (hardware) {
+            // Hardware poses arrive independently of RGB. Wait for a new
+            // source generation rather than resubmitting a stale pose.
             PoseResult pr;
-            const bool skeleton_streaming = g_kinect->wait_for_skeleton(
-                &pr, &kinect_generation, 100);
+            const bool skeleton_streaming = hardware_wait_for_skeleton(
+                &pr, &hardware_generation, 100);
             if (!skeleton_streaming) {
                 if (g_analysisWk.stop) break;
                 continue;
             }
             if (skeleton_streaming && pr.valid) {
-                transform_kinect_pose_to_stage(pr);
+                if (g_kinect) transform_kinect_pose_to_stage(pr);
                 map_pose_to_body(pr, body);
                 detected = true;
             }
 
             const bool valid_now = skeleton_streaming && pr.valid;
-            if (valid_now != last_kinect_valid) {
+            if (valid_now != last_hardware_valid) {
                 if (valid_now) {
                     const float hip_x = (pr.world[MP_LeftHip][0] +
                                          pr.world[MP_RightHip][0]) * 0.5f;
@@ -734,13 +804,13 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
                     const float hip_z = (pr.world[MP_LeftHip][2] +
                                          pr.world[MP_RightHip][2]) * 0.5f;
                     log(
-                        "analysis: Kinect body -> TRACKED, "
+                        "analysis: %s body -> TRACKED, "
                         "hip=(%.3f, %.3f, %.3f), confidence=%.2f",
-                        hip_x, hip_y, hip_z, pr.confidence);
-                } else if (last_kinect_valid) {
-                    log("analysis: Kinect body -> NOT TRACKED");
+                        hardware_name(), hip_x, hip_y, hip_z, pr.confidence);
+                } else if (last_hardware_valid) {
+                    log("analysis: %s body -> NOT TRACKED", hardware_name());
                 }
-                last_kinect_valid = valid_now;
+                last_hardware_valid = valid_now;
             }
         } else {
             src_get_frame(frame, w, h);
@@ -763,14 +833,14 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
         } else {
             miss++;
             const uint64_t now_ms = GetTickCount64();
-            const bool kinectGrace = g_kinect && body.TrackingState != 0 &&
+            const bool hardware_grace = hardware && body.TrackingState != 0 &&
                 last_detected_ms != 0 &&
                 now_ms - last_detected_ms <=
-                    (uint64_t)g_cfg.kinect_body_hold_ms;
-            if (kinectGrace || (!g_kinect && miss <= 5 && body.TrackingState != 0)) {
-                // Bridge short NUI identity/occlusion gaps with the last stable
+                    (uint64_t)hardware_body_hold_ms();
+            if (hardware_grace || (!hardware && miss <= 5 && body.TrackingState != 0)) {
+                // Bridge short hardware identity/occlusion gaps with the last stable
                 // body, but mark every joint inferred. A real departure still
-                // becomes NotTracked after KinectBodyHoldMs.
+                // becomes NotTracked after the backend's configured hold time.
                 body.TrackingState = 1;
                 for (int j = 0; j < kJointCount; ++j) {
                     if (body.JointData[j].TrackingState != 0) {
@@ -785,8 +855,9 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
         uint64_t ts = qpc_now_us();
         ImageDesc* main_img = nullptr;
         ImageDesc* sub_img = nullptr;
-        if (g_kinect) {
-            if (g_cfg.kinect_pose_images && g_kinect->has_color_stream()) {
+        if (hardware) {
+            if (g_kinect && g_cfg.kinect_pose_images &&
+                g_kinect->has_color_stream()) {
                 src_get_frame(frame, w, h);
                 const uint8_t* pixels = frame.empty() ? nullptr : frame.data();
                 main_img = make_reusable_image_desc(0, pixels, w, h);
@@ -801,7 +872,7 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
             main_img = make_image_desc(pixels, w, h);
             sub_img = make_image_desc(pixels, w, h);
         }
-        if (!main_img || (!g_kinect && !sub_img)) {
+        if (!main_img || (!hardware && !sub_img)) {
             static int drop_log = 0;
             if (++drop_log % 300 == 1)
                 log("analysis: image pool cap reached, delivering frame without images");
@@ -814,7 +885,7 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
            main_img, sub_img);
         frame_no++;
 
-        if (!g_kinect) {
+        if (!hardware) {
             // Webcam inference has no hardware-frame wait, so retain a precise
             // bounded cadence without the old 4 ms rounding oversleep.
             next_webcam_tick += std::chrono::microseconds(
@@ -861,8 +932,9 @@ static void t_ReleaseImageDesc(ImageDesc* p) {
 static intptr_t t_Initialize(void) {
     config_apply_environment();
     g_initialized = true;
-    log("runtime 3/5: initialized VP4U shim (backend=%s)",
-        backend() == Backend::Kinect ? "kinect" : "webcam");
+    const char* name = backend() == Backend::Kinect ? "kinect"
+        : (backend() == Backend::SteamVr ? "steamvr" : "webcam");
+    log("runtime 3/5: initialized VP4U shim (backend=%s)", name);
     return 1;
 }
 
@@ -871,6 +943,7 @@ static void t_Shutdown(void) {
     g_previewWk.join();
     g_analysisWk.join();
     g_kinect.reset();
+    g_steamvr.reset();
     g_cam.reset();
     if (g_poseOk) { g_pose.shutdown(); g_poseOk = false; }
     g_initialized = false;
@@ -907,6 +980,29 @@ static bool t_OpenRealSense(void) {
         log("runtime 4/5: Kinect sensor FAILED");
         return false;
     }
+    if (backend() == Backend::SteamVr) {
+        log("runtime 4/5: opening SteamVR tracked-pose runtime");
+        SteamVrTrackingOptions options;
+        options.runtime_dir = steamvr_runtime_default();
+        options.capture_fps = g_cfg.capture_fps;
+        options.body_hold_ms = g_cfg.steamvr_body_hold_ms;
+        options.stage_hip_x = g_cfg.steamvr_stage_hip_x;
+        options.stage_hip_y = g_cfg.steamvr_stage_hip_y;
+        options.stage_hip_z = g_cfg.steamvr_stage_hip_z;
+        options.auto_center = g_cfg.steamvr_auto_center;
+        options.face_to_face = g_cfg.steamvr_face_to_face;
+        options.require_waist = g_cfg.steamvr_require_waist;
+        options.require_feet = g_cfg.steamvr_require_feet;
+        options.log = [](void*, const char* message) { log("%s", message); };
+        std::string error;
+        g_steamvr = SteamVrSource::acquire(options, &error);
+        if (g_steamvr) {
+            log("runtime 4/5: SteamVR runtime opened (tracked poses, no RGB)");
+            return true;
+        }
+        log("runtime 4/5: SteamVR runtime FAILED: %s", error.c_str());
+        return false;
+    }
     int n = count_physical_cameras();
     log("runtime 4/5: %d USB camera(s), opening index %d",
         n, g_cfg.camera_index);
@@ -927,10 +1023,10 @@ static bool t_OpenRealSense(void) {
 }
 
 static bool t_RealSenseLeftIsActive(void) {
-    return g_kinect != nullptr || (g_cam && g_cam->is_real_camera());
+    return hardware_skeleton_active() || (g_cam && g_cam->is_real_camera());
 }
 static bool t_RealSenseRightIsActive(void) {
-    return g_kinect != nullptr || (g_cam && g_cam->is_real_camera());
+    return hardware_skeleton_active() || (g_cam && g_cam->is_real_camera());
 }
 
 static bool t_TryRebootRealSense(bool forceReboot) {
@@ -944,12 +1040,12 @@ static bool t_TryRebuildRealSenseFilters(void) {
 
 static int init_pose_engine(const char* productKey, const char* mode) {
     (void)productKey;
-    if (backend() == Backend::Kinect) {
+    if (backend() != Backend::Webcam) {
         // The game initializes VisionPose before it calls OpenRealSense, so
-        // g_kinect is still null here. Select by the configured backend to
-        // avoid creating an unused MediaPipe thread pool: Kinect NUI
-        // supplies the skeleton directly once the sensor is opened.
-        log("InitVisionPose%s: skipped (kinect backend uses NUI skeleton)", mode);
+        // the hardware source is still null here. Select by the configured
+        // backend to avoid creating an unused MediaPipe thread pool.
+        log("InitVisionPose%s: skipped (%s backend supplies tracked poses)",
+            mode, backend() == Backend::Kinect ? "kinect" : "steamvr");
         return 1;
     }
     std::wstring runtime_dir;

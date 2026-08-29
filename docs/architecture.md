@@ -16,7 +16,7 @@ Spice -k dance_around_anygear_<backend>.dll
 Each entry DLL is monolithic. It owns selection, dependency discovery, stage
 logging, loader redirection, the documented VP4U compatibility ABI, and its sensor
 backend. Sensor-specific code remains separated internally so Kinect, webcam,
-and future D4xx targets share the same ABI core. A backend may have adjacent
+SteamVR, and future D4xx targets share the same ABI core. A backend may have adjacent
 data/runtime dependencies, but Spice loads only the entry DLL.
 
 Heavy initialization must not occur in `DllMain`. Spice's `-k` lifecycle calls
@@ -44,6 +44,20 @@ dance_around_anygear_webcam/
 
 Those binary inputs are not committed. Bootstrap/package scripts accept only
 the pinned MediaPipe v1.0.0 Windows runtime and versioned model hashes.
+
+SteamVR release archives use this layout:
+
+```text
+dance_around_anygear_steamvr.dll        <- only Spice -k target
+dance_around_anygear_steamvr/
+  openvr_api.dll                        <- loaded by absolute plugin-relative path
+  LICENSE.openvr.txt
+```
+
+The entry DLL initializes OpenVR as a background pose client. It neither
+creates a rendering context nor submits frames to a headset. HMD, controller,
+and user-assigned generic-tracker poses are reconstructed into the common
+33-landmark stage representation before the shared VP4U body mapper runs.
 
 ## Ownership rules
 

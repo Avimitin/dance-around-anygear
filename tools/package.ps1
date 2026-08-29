@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('kinect', 'webcam')]
+    [ValidateSet('kinect', 'webcam', 'steamvr')]
     [string] $Backend = 'kinect',
-    [string] $Version = '0.2.0',
+    [string] $Version = '0.3.0',
     [string] $MediaPipeRoot,
+    [string] $OpenVrRoot,
     [switch] $LocalEvaluation
 )
 
@@ -81,6 +82,57 @@ Do not publish this ZIP until that release gate is resolved.
 
 Logs are compact: stage 1/4..4/4 cover Spice loading/redirection and runtime
 1/5..5/5 cover VP4U entry, API table, MediaPipe init, USB camera, and analysis.
+"@
+} elseif ($Backend -eq 'steamvr') {
+    if ([string]::IsNullOrWhiteSpace($OpenVrRoot)) {
+        $OpenVrRoot = Join-Path $RepositoryRoot '.deps\openvr\v2.15.6'
+    }
+    $OpenVrRoot = (Resolve-Path -LiteralPath $OpenVrRoot).Path
+    $OpenVrDependencies = [ordered]@{
+        'bin\win64\openvr_api.dll' = @{
+            Name = 'openvr_api.dll'
+            Sha256 = 'BAB8AC6EF64E68A9CA53315B0014D131088584B2EFDFA6DB511D67EC03CFCB4A'
+        }
+        'LICENSE' = @{
+            Name = 'LICENSE.openvr.txt'
+            Sha256 = '9E6D1480FB68E86CEAFED312F7E67DADCDC2A99B350B710D624B8F0F0F1A2329'
+        }
+    }
+    $DependencyDestination = Join-Path $StageRoot 'dance_around_anygear_steamvr'
+    New-Item -ItemType Directory -Path $DependencyDestination -Force | Out-Null
+    foreach ($RelativePath in $OpenVrDependencies.Keys) {
+        $Source = Join-Path $OpenVrRoot $RelativePath
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+            throw "OpenVR dependency missing: $Source"
+        }
+        $ActualHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
+        if ($ActualHash -ne $OpenVrDependencies[$RelativePath].Sha256) {
+            throw "OpenVR dependency hash mismatch for $RelativePath`: $ActualHash"
+        }
+        Copy-Item -LiteralPath $Source -Destination (Join-Path `
+            $DependencyDestination $OpenVrDependencies[$RelativePath].Name)
+    }
+    $Readme = @"
+dance-around-anygear $Version - SteamVR full-body tracked poses
+
+Requirements:
+- Spice build with DANCE aROUND support
+- SteamVR with an HMD and left/right controllers
+- Waist, left-foot, and right-foot trackers assigned in SteamVR's
+  Manage Trackers screen (strict six-point profile)
+- Original, unmodified game files
+
+Copy the full extracted layout beside Spice and load only:
+    -k $PluginName
+
+Spice loads only the Anygear DLL. It loads the pinned OpenVR client runtime
+from .\dance_around_anygear_steamvr and reads standing-space poses. RGB,
+MediaPipe, a render context, a helper process, and runtime downloads are not
+used. Chest, shoulder, elbow, and knee tracker roles are consumed when present.
+
+Start SteamVR and confirm every tracker role before starting the game. Logs
+show the resolved device-role table and transition between TRACKED and
+NOT TRACKED. A missing required role remains NOT TRACKED by design.
 "@
 } else {
     $Readme = @"

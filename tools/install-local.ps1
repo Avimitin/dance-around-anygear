@@ -3,9 +3,10 @@ param(
     [Parameter(Mandatory)]
     [Alias('GameRoot')]
     [string] $CabinetRoot,
-    [ValidateSet('kinect', 'webcam')]
+    [ValidateSet('kinect', 'webcam', 'steamvr')]
     [string] $Backend = 'kinect',
     [string] $MediaPipeRoot,
+    [string] $OpenVrRoot,
     [string] $WindowSize,
     [string] $WindowPosition,
     [switch] $GenerateLauncher
@@ -37,6 +38,7 @@ foreach ($required in @($PluginSource)) {
 }
 
 $MediaPipeSources = [ordered]@{}
+$OpenVrSources = [ordered]@{}
 if ($Backend -eq 'webcam') {
     if ([string]::IsNullOrWhiteSpace($MediaPipeRoot)) {
         $MediaPipeRoot = Join-Path $RepositoryRoot '.deps\mediapipe\v1.0.0\windows-x86_64'
@@ -60,6 +62,33 @@ if ($Backend -eq 'webcam') {
         $MediaPipeSources[$Name] = $Source
     }
 }
+if ($Backend -eq 'steamvr') {
+    if ([string]::IsNullOrWhiteSpace($OpenVrRoot)) {
+        $OpenVrRoot = Join-Path $RepositoryRoot '.deps\openvr\v2.15.6'
+    }
+    $OpenVrRoot = (Resolve-Path -LiteralPath $OpenVrRoot).Path
+    $DependencyHashes = [ordered]@{
+        'bin\win64\openvr_api.dll' = @{
+            Name = 'openvr_api.dll'
+            Sha256 = 'BAB8AC6EF64E68A9CA53315B0014D131088584B2EFDFA6DB511D67EC03CFCB4A'
+        }
+        'LICENSE' = @{
+            Name = 'LICENSE.openvr.txt'
+            Sha256 = '9E6D1480FB68E86CEAFED312F7E67DADCDC2A99B350B710D624B8F0F0F1A2329'
+        }
+    }
+    foreach ($RelativePath in $DependencyHashes.Keys) {
+        $Source = Join-Path $OpenVrRoot $RelativePath
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+            throw "OpenVR dependency not found: $Source"
+        }
+        $ActualHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
+        if ($ActualHash -ne $DependencyHashes[$RelativePath].Sha256) {
+            throw "OpenVR dependency hash mismatch for $RelativePath`: $ActualHash"
+        }
+        $OpenVrSources[$DependencyHashes[$RelativePath].Name] = $Source
+    }
+}
 
 # All inputs have now been validated. Only start changing the cabinet tree
 # after a missing or mismatched dependency can no longer leave a partial install.
@@ -70,6 +99,14 @@ if ($Backend -eq 'webcam') {
     foreach ($Name in $MediaPipeSources.Keys) {
         Copy-Item -LiteralPath $MediaPipeSources[$Name] `
             -Destination $DependencyDestination -Force
+    }
+}
+if ($Backend -eq 'steamvr') {
+    $DependencyDestination = Join-Path $CabinetRoot 'dance_around_anygear_steamvr'
+    New-Item -ItemType Directory -Path $DependencyDestination -Force | Out-Null
+    foreach ($Name in $OpenVrSources.Keys) {
+        Copy-Item -LiteralPath $OpenVrSources[$Name] `
+            -Destination (Join-Path $DependencyDestination $Name) -Force
     }
 }
 

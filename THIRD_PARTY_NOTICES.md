@@ -25,3 +25,12 @@ Spice is distributed under GNU GPL version 3.
 The Kinect backend is compiled against `NuiApi.h` from a user-installed Kinect
 for Windows SDK 1.8 and dynamically resolves `Kinect10.dll` at runtime. The SDK
 headers, runtime, and import library are external build/runtime dependencies.
+
+## Valve OpenVR
+
+The SteamVR backend compiles against the generated `openvr_capi.h` and ships
+the official Windows x86-64 `openvr_api.dll` from Valve OpenVR `v2.15.6`.
+OpenVR is licensed under the BSD 3-Clause License. The SDK/runtime files are
+fetched into the ignored dependency cache and verified against the hashes in
+`dependency-lock.json`; they are not committed to this source tree. Packaged
+runtime directories include the OpenVR license text.

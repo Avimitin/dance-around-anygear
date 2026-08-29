@@ -7,6 +7,15 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$OpenVrRoot = Join-Path $RepositoryRoot '.deps\openvr\v2.15.6'
+if (-not (Test-Path -LiteralPath $OpenVrRoot -PathType Container)) {
+    throw 'OpenVR SDK is absent. Run tools/bootstrap-openvr.ps1 -Download first.'
+}
+& (Join-Path $PSScriptRoot 'bootstrap-openvr.ps1') -SourceRoot $OpenVrRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenVR dependency verification failed with exit code $LASTEXITCODE."
+}
+$OpenVrRoot = (Resolve-Path -LiteralPath $OpenVrRoot).Path
 if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) {
     throw 'Supply -ToolchainRoot or set ANYGEAR_TOOLCHAIN_ROOT.'
 }
@@ -50,20 +59,24 @@ foreach ($name in @('a', 'b')) {
         "-DCMAKE_C_COMPILER=$GccExe",
         "-DCMAKE_CXX_COMPILER=$GxxExe",
         '-DANYGEAR_BUILD_TESTS=OFF',
-        '-DANYGEAR_BUILD_WEBCAM=ON'
+        '-DANYGEAR_BUILD_WEBCAM=ON',
+        '-DANYGEAR_BUILD_STEAMVR=ON',
+        "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot"
     )
     Write-Host "[REPRO $name] configure"
     & $CmakeExe @ConfigureArguments
     if ($LASTEXITCODE -ne 0) { throw "CMake configure $name failed." }
-    & $CmakeExe --build $BuildDirectory --target anygear_kinect anygear_webcam
+    & $CmakeExe --build $BuildDirectory --target `
+        anygear_kinect anygear_webcam anygear_steamvr
     if ($LASTEXITCODE -ne 0) { throw "CMake build $name failed." }
     $HashSets += ,([ordered]@{
         kinect = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_kinect.dll') -Algorithm SHA256).Hash
         webcam = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_webcam.dll') -Algorithm SHA256).Hash
+        steamvr = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_steamvr.dll') -Algorithm SHA256).Hash
     })
 }
 
-foreach ($backend in @('kinect', 'webcam')) {
+foreach ($backend in @('kinect', 'webcam', 'steamvr')) {
     if ($HashSets[0][$backend] -ne $HashSets[1][$backend]) {
         throw "Reproducibility check failed for $backend`: $($HashSets[0][$backend]) != $($HashSets[1][$backend])"
     }

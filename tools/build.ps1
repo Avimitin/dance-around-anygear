@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string] $ToolchainRoot = $env:ANYGEAR_TOOLCHAIN_ROOT,
+    [string] $OpenVrRoot = $env:ANYGEAR_OPENVR_SDK_ROOT,
     [ValidateSet('Release', 'Debug')]
     [string] $Configuration = 'Release',
     [switch] $Clean,
@@ -12,6 +13,18 @@ $ErrorActionPreference = 'Stop'
 
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $BuildRoot = Join-Path $RepositoryRoot 'build'
+
+if ([string]::IsNullOrWhiteSpace($OpenVrRoot)) {
+    $OpenVrRoot = Join-Path $RepositoryRoot '.deps\openvr\v2.15.6'
+}
+if (-not (Test-Path -LiteralPath $OpenVrRoot -PathType Container)) {
+    throw 'OpenVR SDK is absent. Run tools/bootstrap-openvr.ps1 -Download first.'
+}
+$OpenVrRoot = (Resolve-Path -LiteralPath $OpenVrRoot).Path
+& (Join-Path $PSScriptRoot 'bootstrap-openvr.ps1') -SourceRoot $OpenVrRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenVR dependency verification failed with exit code $LASTEXITCODE."
+}
 
 if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) {
     throw 'Supply -ToolchainRoot or set ANYGEAR_TOOLCHAIN_ROOT to a WinLibs mingw64 directory.'
@@ -54,7 +67,9 @@ $ConfigureArguments = @(
     "-DCMAKE_C_COMPILER=$GccExe",
     "-DCMAKE_CXX_COMPILER=$GxxExe",
     '-DANYGEAR_BUILD_TESTS=ON',
-    '-DANYGEAR_BUILD_WEBCAM=ON'
+    '-DANYGEAR_BUILD_WEBCAM=ON',
+    '-DANYGEAR_BUILD_STEAMVR=ON',
+    "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot"
 )
 
 Write-Host "[CONFIGURE] GCC $CompilerVersion, $Configuration"
@@ -73,11 +88,14 @@ $BinOutput = Join-Path $BuildRoot 'bin'
 $ExpectedOutputs = @(
     (Join-Path $BinOutput 'dance_around_anygear_kinect.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_webcam.dll'),
+    (Join-Path $BinOutput 'dance_around_anygear_steamvr.dll'),
     (Join-Path $BinOutput 'anygear_loader_smoke.exe'),
     (Join-Path $BinOutput 'anygear_vp4u_harness.exe'),
     (Join-Path $BinOutput 'anygear_kinect_probe.exe'),
     (Join-Path $BinOutput 'anygear_webcam_probe.exe'),
-    (Join-Path $BinOutput 'anygear_mediapipe_probe.exe')
+    (Join-Path $BinOutput 'anygear_mediapipe_probe.exe'),
+    (Join-Path $BinOutput 'anygear_steamvr_pose_test.exe'),
+    (Join-Path $BinOutput 'anygear_steamvr_probe.exe')
 )
 foreach ($output in $ExpectedOutputs) {
     if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
@@ -87,7 +105,8 @@ foreach ($output in $ExpectedOutputs) {
 
 $PluginDlls = @(
     (Join-Path $BinOutput 'dance_around_anygear_kinect.dll'),
-    (Join-Path $BinOutput 'dance_around_anygear_webcam.dll')
+    (Join-Path $BinOutput 'dance_around_anygear_webcam.dll'),
+    (Join-Path $BinOutput 'dance_around_anygear_steamvr.dll')
 )
 foreach ($PluginDll in $PluginDlls) {
     $PluginExports = (& $ObjdumpExe -p $PluginDll | Out-String)

@@ -71,7 +71,29 @@ The low-level probe must enumerate the requested camera and receive real
 frames before the full harness runs. An absent or out-of-range camera is an
 explicit failure; the release path does not substitute synthetic frames.
 
-## 4. Full game check
+## 4. Isolated SteamVR check
+
+Prepare and verify the pinned OpenVR client first:
+
+```powershell
+./tools/bootstrap-openvr.ps1 -Download
+./tools/test.ps1 -SkipBuild
+```
+
+The default tests exercise deterministic six-point reconstruction, loader
+redirection, and the VP4U table without connecting to SteamVR. With the HMD,
+controllers, and three required trackers ready, opt into the hardware path:
+
+```powershell
+./tools/test.ps1 -SkipBuild -HardwareSteamVr -Seconds 30
+```
+
+Expected markers include the OpenVR version, a role table containing `waist`,
+`left-foot`, and `right-foot` device indices, and a `SteamVR body -> TRACKED`
+transition. A missing role is an explicit not-tracked result. The command does
+not start Unity, but OpenVR initialization may connect to or start SteamVR.
+
+## 5. Full game check
 
 Install and generate the short launcher without running it:
 
@@ -123,3 +145,5 @@ telemetry is intentionally left to `tools/diagnostics/`.
   not-tracked instead of emitting unbounded stale data.
 - Webcam inference is capped at 30 Hz on an 848x480 BGR frame; preview is
   capped at 15 Hz and shares the same bounded image pool.
+- SteamVR polls standing-space poses at 60 Hz, creates no render context, and
+  uses the same 1x1 image-token path as skeleton-only Kinect.

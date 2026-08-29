@@ -17,6 +17,27 @@
     "dll": "Kinect10.dll",
     "redistributed": false
   },
+  "openVr": {
+    "sourceRepository": "https://github.com/ValveSoftware/openvr.git",
+    "sourceTag": "v2.15.6",
+    "sourceCommit": "0924064316de3effbcd1acf1e309182a2deb1c05",
+    "license": "BSD-3-Clause",
+    "cApiHeader": {
+      "file": "headers/openvr_capi.h",
+      "bytes": 183736,
+      "sha256": "2BA5AC520F344E2359DD25103975E9ACA9C0011A38E84789113DADD51F386A41"
+    },
+    "windowsRuntime": {
+      "file": "bin/win64/openvr_api.dll",
+      "bytes": 837272,
+      "sha256": "BAB8AC6EF64E68A9CA53315B0014D131088584B2EFDFA6DB511D67EC03CFCB4A"
+    },
+    "licenseFile": {
+      "file": "LICENSE",
+      "bytes": 1515,
+      "sha256": "9E6D1480FB68E86CEAFED312F7E67DADCDC2A99B350B710D624B8F0F0F1A2329"
+    }
+  },
   "mediaPipeWebcam": {
     "sourceRepository": "https://github.com/google-ai-edge/mediapipe.git",
     "sourceTag": "v1.0.0",

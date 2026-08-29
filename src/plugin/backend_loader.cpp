@@ -22,6 +22,8 @@
 static constexpr char kBackendName[] = "kinect";
 #elif defined(ANYGEAR_BACKEND_WEBCAM)
 static constexpr char kBackendName[] = "webcam";
+#elif defined(ANYGEAR_BACKEND_STEAMVR)
+static constexpr char kBackendName[] = "steamvr";
 #else
 #error Define exactly one ANYGEAR_BACKEND_* target.
 #endif
@@ -377,7 +379,7 @@ size_t patch_loaded_modules() {
     return count;
 }
 
-#if defined(ANYGEAR_BACKEND_KINECT)
+#if defined(ANYGEAR_BACKEND_KINECT) || defined(ANYGEAR_BACKEND_STEAMVR)
 void set_environment_default(const wchar_t *name, const wchar_t *value) {
     const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
     if (required == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
@@ -391,6 +393,10 @@ void configure_backend() {
 #if defined(ANYGEAR_BACKEND_KINECT)
     set_environment_default(L"VP4U_CAPTURE_FPS", L"30");
     set_environment_default(L"VP4U_PREVIEW_FPS", L"15");
+    set_environment_default(L"VP4U_IMAGE_POOL_MAX", L"12");
+#elif defined(ANYGEAR_BACKEND_STEAMVR)
+    set_environment_default(L"VP4U_CAPTURE_FPS", L"60");
+    set_environment_default(L"VP4U_PREVIEW_FPS", L"1");
     set_environment_default(L"VP4U_IMAGE_POOL_MAX", L"12");
 #endif
 }
@@ -495,6 +501,10 @@ extern "C" __declspec(dllexport) int __cdecl spice_sdk_entry_point(
     log_message(ANYGEAR_SPICE_LOG_INFO,
         "stage 2/4: stable Kinect profile selected "
         "(skeleton-only, 30 Hz, preview 15 Hz, image pool 12)");
+#elif defined(ANYGEAR_BACKEND_STEAMVR)
+    log_message(ANYGEAR_SPICE_LOG_INFO,
+        "stage 2/4: SteamVR tracked-pose profile selected "
+        "(standing space, 60 Hz, no RGB, strict six-point body)");
 #else
     log_message(ANYGEAR_SPICE_LOG_INFO,
         "stage 2/4: MediaPipe USB webcam profile selected "

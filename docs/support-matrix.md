@@ -6,6 +6,7 @@
 | Kinect v1 | Kinect for Windows SDK 1.8 NUI | Hardware skeleton (20 joints) | No | Validated in game |
 | D4xx | librealsense depth/IR | To be selected per model | Expected no | Planned |
 | Webcam | Media Foundation | MediaPipe v1 Pose Landmarker Lite (33 joints) | Yes | Model/ABI validated; USB and in-game validation pending |
+| SteamVR | OpenVR standing-space tracked devices | HMD/controllers plus role-assigned body trackers | No | Mapping/ABI validated; hardware and in-game validation pending |
 
 ## Kinect validated profile
 
@@ -34,3 +35,16 @@ game. Changes require both isolated harness evidence and an in-game run.
 - Python, OpenCV, helper processes, and runtime downloads are not required.
 - Current development host enumerated zero USB cameras, so real capture,
   performer/avatar orientation, and full game calibration remain unvalidated.
+
+## SteamVR validated profile
+
+- Official OpenVR SDK/client runtime `v2.15.6`, dynamically loaded.
+- Background pose client at 60 Hz; no compositor, render target, or RGB path.
+- Strict minimum: HMD, left/right controllers, waist, left foot, right foot.
+- Optional SteamVR roles: chest, left/right shoulder, elbow, and knee.
+- Standing-space origin is sampled once from the waist; subsequent room-scale
+  movement is retained and mapped around `(0.55, 0.00, 2.30)` meters.
+- Preview and pose-image callbacks use shared 1x1 sentinels.
+- Synthetic six-point mapping, all three loader paths, and VP4U ABI pass
+  offline. No SteamVR installation was present on the development host, so
+  device-role discovery and in-game orientation remain hardware-test items.

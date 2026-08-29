@@ -75,6 +75,18 @@ packaging remains blocked because explicit redistribution terms for Google's
 separately hosted `.task` model have not been verified; `-LocalEvaluation` is
 an intentional, labelled local-testing option.
 
+The SteamVR backend pins Valve OpenVR `v2.15.6` at commit
+`0924064316de3effbcd1acf1e309182a2deb1c05`. The generated C API header,
+Windows x86-64 `openvr_api.dll`, and BSD-3-Clause license are each checked by
+size and SHA-256. Prepare them in the ignored cache with:
+
+```powershell
+./tools/bootstrap-openvr.ps1 -Download
+```
+
+The runtime DLL and license are copied into SteamVR release archives; neither
+is committed to the source tree.
+
 ## Reproducibility check
 
 Run two isolated builds from the same source/toolchain and require an exact DLL
@@ -85,6 +97,6 @@ hash match:
 ```
 
 The build maps both source and binary directories out of DWARF, retains the
-debug sections, and disables the PE timestamp. Both Kinect and webcam entry
+debug sections, and disables the PE timestamp. Kinect, webcam, and SteamVR entry
 DLLs must match byte-for-byte. Package ZIP container timestamps may differ;
 the files listed in `SHA256SUMS` are the reproducibility boundary.

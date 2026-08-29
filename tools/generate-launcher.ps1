@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory)]
     [string] $CabinetRoot,
-    [ValidateSet('kinect', 'webcam')]
+    [ValidateSet('kinect', 'webcam', 'steamvr')]
     [string] $Backend = 'kinect',
     [string] $WindowSize,
     [string] $WindowPosition,
@@ -47,6 +47,12 @@ if ($Backend -eq 'webcam') {
     $RequiredFiles += @(
         (Join-Path $CabinetRoot 'dance_around_anygear_webcam\libmediapipe.dll'),
         (Join-Path $CabinetRoot 'dance_around_anygear_webcam\pose_landmarker_lite.task')
+    )
+}
+if ($Backend -eq 'steamvr') {
+    $RequiredFiles += @(
+        (Join-Path $CabinetRoot 'dance_around_anygear_steamvr\openvr_api.dll'),
+        (Join-Path $CabinetRoot 'dance_around_anygear_steamvr\LICENSE.openvr.txt')
     )
 }
 foreach ($required in $RequiredFiles) {
