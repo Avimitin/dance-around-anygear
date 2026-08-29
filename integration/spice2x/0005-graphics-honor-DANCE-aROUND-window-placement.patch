@@ -1,0 +1,135 @@
+From 8f2686d98cc39818b4c24fc60d0537e67bc72d6a Mon Sep 17 00:00:00 2001
+From: Avimitin <dev@avimit.in>
+Date: Sat, 29 Aug 2026 11:58:05 +0800
+Subject: [PATCH 5/5] graphics: honor DANCE aROUND window placement
+
+Co-authored-by: Codex <codex@openai.com>
+---
+ src/spice2x/games/udn/udn.cpp           | 30 ++++++++++++++++++++-----
+ src/spice2x/hooks/graphics/graphics.cpp | 15 ++++---------
+ src/spice2x/launcher/options.cpp        |  3 ++-
+ 3 files changed, 31 insertions(+), 17 deletions(-)
+
+diff --git a/src/spice2x/games/udn/udn.cpp b/src/spice2x/games/udn/udn.cpp
+index 83792f8..0b35f99 100644
+--- a/src/spice2x/games/udn/udn.cpp
++++ b/src/spice2x/games/udn/udn.cpp
+@@ -16,6 +16,7 @@
+ #include "util/execexe.h"
+ #include "util/logging.h"
+ #include "util/unity_player.h"
++#include "util/utils.h"
+ 
+ namespace games::udn {
+     std::string UDN_INJECT_ARGS = "";
+@@ -62,7 +63,7 @@ namespace games::udn {
+     }
+ 
+     static bool get_udn_window_rect(
+-            DWORD style, DWORD ex_style,
++            HWND window, DWORD style, DWORD ex_style,
+             int &x, int &y, int &outer_width, int &outer_height) {
+ 
+         if (!GRAPHICS_WINDOWED || !GRAPHICS_WINDOW_SIZE.has_value()) {
+@@ -78,6 +79,25 @@ namespace games::udn {
+         outer_width = (int) (rect.right - rect.left);
+         outer_height = (int) (rect.bottom - rect.top);
+ 
++        // Once Spice owns the HWND, WM_MOVE keeps these values synchronized
++        // with interactive moves. Before creation, use the command-line value
++        // parsed from -windowpos so the very first visible frame is placed
++        // correctly instead of flashing at Unity's cabinet coordinates.
++        if (window && GRAPHICS_HOOKED_WINDOW.has_value() &&
++            window == GRAPHICS_HOOKED_WINDOW.value()) {
++            x = cfg::SCREENRESIZE->window_offset_x;
++            y = cfg::SCREENRESIZE->window_offset_y;
++            return true;
++        }
++        if (GRAPHICS_WINDOW_POS.has_value()) {
++            std::pair<uint32_t, uint32_t> position;
++            if (parse_width_height(GRAPHICS_WINDOW_POS.value(), position)) {
++                x = (int) position.first;
++                y = (int) position.second;
++                return true;
++            }
++        }
++
+         RECT work {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+         SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+         x = (int) work.left + std::max(
+@@ -98,7 +118,7 @@ namespace games::udn {
+             window_name && _wcsicmp(window_name, L"DANCEaROUND") == 0;
+         if (is_unity && GRAPHICS_WINDOWED) {
+             style = force_udn_window_style(style);
+-            get_udn_window_rect(style, ex_style, x, y, width, height);
++            get_udn_window_rect(nullptr, style, ex_style, x, y, width, height);
+         }
+ 
+         const auto result = CreateWindowExW_orig(
+@@ -126,7 +146,7 @@ namespace games::udn {
+             window_name && _stricmp(window_name, "DANCEaROUND") == 0;
+         if (is_unity && GRAPHICS_WINDOWED) {
+             style = force_udn_window_style(style);
+-            get_udn_window_rect(style, ex_style, x, y, width, height);
++            get_udn_window_rect(nullptr, style, ex_style, x, y, width, height);
+         }
+ 
+         const auto result = CreateWindowExA_orig(
+@@ -149,7 +169,7 @@ namespace games::udn {
+         if (GRAPHICS_WINDOWED && is_udn_unity_window(window)) {
+             const DWORD style = force_udn_window_style((DWORD) GetWindowLongPtrW(window, GWL_STYLE));
+             const DWORD ex_style = (DWORD) GetWindowLongPtrW(window, GWL_EXSTYLE);
+-            if (get_udn_window_rect(style, ex_style, x, y, width, height)) {
++            if (get_udn_window_rect(window, style, ex_style, x, y, width, height)) {
+                 flags &= ~(SWP_NOMOVE | SWP_NOSIZE);
+             }
+         }
+@@ -162,7 +182,7 @@ namespace games::udn {
+         if (GRAPHICS_WINDOWED && is_udn_unity_window(window)) {
+             const DWORD style = force_udn_window_style((DWORD) GetWindowLongPtrW(window, GWL_STYLE));
+             const DWORD ex_style = (DWORD) GetWindowLongPtrW(window, GWL_EXSTYLE);
+-            get_udn_window_rect(style, ex_style, x, y, width, height);
++            get_udn_window_rect(window, style, ex_style, x, y, width, height);
+         }
+         return MoveWindow_orig(window, x, y, width, height, repaint);
+     }
+diff --git a/src/spice2x/hooks/graphics/graphics.cpp b/src/spice2x/hooks/graphics/graphics.cpp
+index 8760ba4..5598c75 100644
+--- a/src/spice2x/hooks/graphics/graphics.cpp
++++ b/src/spice2x/hooks/graphics/graphics.cpp
+@@ -415,17 +415,10 @@ static bool udn_get_target_window_rect(HWND hWnd, RECT &target) {
+     const int outer_width = frame.right - frame.left;
+     const int outer_height = frame.bottom - frame.top;
+ 
+-    MONITORINFO monitor_info {};
+-    monitor_info.cbSize = sizeof(monitor_info);
+-    RECT work {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+-    const HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+-    if (monitor && GetMonitorInfoW(monitor, &monitor_info)) {
+-        work = monitor_info.rcWork;
+-    }
+-    const int x = (int) work.left + std::max(
+-        0, ((int) (work.right - work.left) - outer_width) / 2);
+-    const int y = (int) work.top + std::max(
+-        0, ((int) (work.bottom - work.top) - outer_height) / 2);
++    // graphics_load_windowed_parameters initializes these from -windowpos,
++    // while WM_MOVE keeps them synchronized after an interactive drag.
++    const int x = cfg::SCREENRESIZE->window_offset_x;
++    const int y = cfg::SCREENRESIZE->window_offset_y;
+     target = {x, y, x + outer_width, y + outer_height};
+     return true;
+ }
+diff --git a/src/spice2x/launcher/options.cpp b/src/spice2x/launcher/options.cpp
+index a27ac3e..eb6b123 100644
+--- a/src/spice2x/launcher/options.cpp
++++ b/src/spice2x/launcher/options.cpp
+@@ -217,7 +217,8 @@ static const std::vector<OptionDefinition> OPTION_DEFINITIONS = {
+     {
+         .title = "Windowed Mode",
+         .name = "w",
+-        .desc = "Enables windowed mode.",
++        .desc = "Enables windowed mode. Use -windowsize width,height and "
++                "-windowpos x,y to set the initial client size and position.",
+         .type = OptionType::Bool,
+         .category = "Windowed Settings",
+         .quick_setting_category = "Display",

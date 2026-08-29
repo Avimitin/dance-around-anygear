@@ -1,0 +1,56 @@
+# Build and package outputs
+/build/
+/dist/
+/artifacts/
+/.deps/
+/.cache/
+__pycache__/
+
+# Native binaries and symbols must never be committed
+*.dll
+*.exe
+*.lib
+*.a
+*.pdb
+*.ilk
+*.exp
+*.obj
+*.o
+*.pyc
+*.whl
+*.zip
+
+# Local analysis databases and captured data
+*.id0
+*.id1
+*.id2
+*.id3
+*.id4
+*.idb
+*.i64
+*.nam
+*.til
+*.dmp
+*.dump
+*.log
+*.etl
+*.pcap
+*.pcapng
+
+# Models and media are fetched or supplied at package time
+*.onnx
+*.tflite
+*.task
+*.engine
+*.jpg
+*.jpeg
+*.png
+*.mp4
+
+# Local configuration
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+local.*

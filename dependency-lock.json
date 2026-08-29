@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "toolchain": {
+    "name": "WinLibs GCC MinGW-w64 UCRT POSIX SEH",
+    "gcc": "16.2.0",
+    "mingwW64": "14.0.0",
+    "cmake": "4.4.2",
+    "ninja": "1.13.2",
+    "archiveFile": "winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip",
+    "archiveUrl": "https://sourceforge.net/projects/winlibs-mingw/files/16.2.0posix-14.0.0-ucrt-r1/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip/download",
+    "archiveBytes": 274029684,
+    "archiveSha256": "C1F52294597C0B73786B2A78EB5D176D89226D2F21875EAB75E783A8B1CEFCC4",
+    "archiveCommitted": false
+  },
+  "kinectV1": {
+    "runtime": "Kinect for Windows SDK 1.8",
+    "dll": "Kinect10.dll",
+    "redistributed": false
+  },
+  "mediaPipeWebcam": {
+    "sourceRepository": "https://github.com/google-ai-edge/mediapipe.git",
+    "sourceTag": "v1.0.0",
+    "sourceCommit": "6d31f1ebc3284db74d211d62bdc4f0a0c29ea120",
+    "license": "Apache-2.0",
+    "windowsWheel": {
+      "file": "mediapipe-1.0.0-py3-none-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/68/53/ffb67e668f23130aff197ec49be912be910c128b60658000d8bf263207c9/mediapipe-1.0.0-py3-none-win_amd64.whl",
+      "bytes": 16057095,
+      "sha256": "DA57E6719BBAB05007272C91D6CA2E0E2E370709491CBE344A372F87E25CF604"
+    },
+    "runtime": {
+      "file": "libmediapipe.dll",
+      "bytes": 43301376,
+      "sha256": "A8970C645C8C87C25EC9965CB5C898E803C6C42F7192B7DE9A0541C62AE48CEF"
+    },
+    "poseLandmarkerLite": {
+      "file": "pose_landmarker_lite.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      "bytes": 5777746,
+      "sha256": "59929E1D1EE95287735DDD833B19CF4AC46D29BC7AFDDBBF6753C459690D574A",
+      "redistributionTermsVerified": false,
+      "reason": "Google documents downloading the model for local projects but does not publish explicit redistribution terms for this separate model bundle. Public release packaging remains gated."
+    },
+    "testImage": {
+      "url": "https://storage.googleapis.com/mediapipe-assets/tasks/testdata/vision/pose.jpg?generation=1782185208547605",
+      "sha256": "C8A830ED683C0276D713DD5AEDA28F415F10CD6291972084A40D0D8B934ED62B"
+    }
+  }
+}

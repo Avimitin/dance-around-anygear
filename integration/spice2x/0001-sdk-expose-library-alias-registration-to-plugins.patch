@@ -1,0 +1,108 @@
+From e9ebf64f1fd1b263415fe6c03879895138fc3326 Mon Sep 17 00:00:00 2001
+From: Avimitin <dev@avimit.in>
+Date: Sat, 29 Aug 2026 03:43:04 +0800
+Subject: [PATCH 1/5] sdk: expose library alias registration to plugins
+
+Co-authored-by: Codex <codex@openai.com>
+---
+ src/spice2x/sdk/include/spicesdk.h | 14 ++++++++++++
+ src/spice2x/sdk/sdk.cpp            | 34 +++++++++++++++++++++++++++++-
+ 2 files changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/src/spice2x/sdk/include/spicesdk.h b/src/spice2x/sdk/include/spicesdk.h
+index 40450df..7f73e04 100644
+--- a/src/spice2x/sdk/include/spicesdk.h
++++ b/src/spice2x/sdk/include/spicesdk.h
+@@ -237,6 +237,18 @@ typedef SPICE_SDK_STATUS_CODE (__cdecl spice_sdk_add_toast_func)(
+     const char *text
+ );
+ 
++// hook_library (v0.3 and up)
++//
++// maps an exact LoadLibrary name to a module that the plugin has already loaded
++//
++//   library_name: exact ANSI library name or path used by the target
++//   module: module handle returned by LoadLibrary
++
++typedef SPICE_SDK_STATUS_CODE (__cdecl spice_sdk_hook_library_func)(
++    const char *library_name,
++    void *module
++);
++
+ typedef struct SPICE_SDK_V0 {
+     uint32_t size;
+ 
+@@ -262,6 +274,8 @@ typedef struct SPICE_SDK_V0 {
+ 
+     spice_sdk_add_toast_func *add_toast;
+ 
++    spice_sdk_hook_library_func *hook_library;
++
+ } SPICE_SDK_V0;
+ 
+ typedef void (__cdecl spice_sdk_destroy_callback_func)(
+diff --git a/src/spice2x/sdk/sdk.cpp b/src/spice2x/sdk/sdk.cpp
+index e860b52..75a09da 100644
+--- a/src/spice2x/sdk/sdk.cpp
++++ b/src/spice2x/sdk/sdk.cpp
+@@ -5,6 +5,7 @@
+ #include "sdk.h"
+ #include "avs/game.h"
+ #include "games/io.h"
++#include "hooks/libraryhook.h"
+ #include "launcher/launcher.h"
+ #include "misc/eamuse.h"
+ #include "overlay/notifications.h"
+@@ -31,6 +32,7 @@ static spice_sdk_clear_touch_func sdk_clear_touch;
+ static spice_sdk_insert_card_func sdk_insert_card;
+ static spice_sdk_set_keypad_func sdk_set_keypad;
+ static spice_sdk_add_toast_func sdk_add_toast;
++static spice_sdk_hook_library_func sdk_hook_library;
+ 
+ struct SdkModule {
+     std::string dll;
+@@ -177,6 +179,12 @@ sdk_init(
+     }
+ 
+     // end of 0.2
++
++    if (v0->size >= RTL_SIZEOF_THROUGH_FIELD(SPICE_SDK_V0, hook_library)) {
++        v0->hook_library = sdk_hook_library;
++    }
++
++    // end of 0.3
+     // any newer minor iterations will need to check the size
+ 
+     {
+@@ -640,5 +648,29 @@ sdk_add_toast(
+     return SPICE_SDK_STATUS_SUCCESS;
+ }
+ 
++SPICE_SDK_STATUS_CODE
++__cdecl
++sdk_hook_library(
++    const char *library_name,
++    void *module
++)
++{
++    std::shared_lock lock(sdk_global_mutex);
++    if (!sdk_initialized) {
++        return SPICE_SDK_STATUS_TOO_LATE;
++    }
++
++    if (!library_name || !library_name[0]) {
++        return SPICE_SDK_STATUS_INVALID_ARGUMENT_1;
++    }
++    if (!module) {
++        return SPICE_SDK_STATUS_INVALID_ARGUMENT_2;
++    }
++
++    libraryhook_hook_library(library_name, static_cast<HMODULE>(module));
++    libraryhook_enable();
++    return SPICE_SDK_STATUS_SUCCESS;
++}
++
+ 
+-} // namespace sdk
+\ No newline at end of file
++} // namespace sdk
