@@ -5,10 +5,11 @@ compatibility backends for **DANCE aROUND**. Each backend is loaded by Spice
 with `-k`; Spice remains responsible for launching the local game installation,
 cabinet/platform emulation, input, cards, overlay, and window management.
 
-Release archives are generated from the checked-in source and pinned external
-inputs. Install the Kinect for Windows SDK 1.8 when building the Kinect target;
-MediaPipe runtime files and models are prepared separately for the webcam target,
-and the pinned OpenVR SDK supplies the SteamVR header/client runtime.
+Release assets are generated from the checked-in source and pinned external
+inputs. The Kinect bootstrap reads the verified official SDK bundle without
+installing it; MediaPipe runtime files and models are prepared separately for
+the webcam target, and the pinned OpenVR SDK supplies the SteamVR header/client
+runtime.
 
 ## Responsibility boundary
 
@@ -50,6 +51,7 @@ On Windows PowerShell:
 
 ```powershell
 ./tools/bootstrap-openvr.ps1 -Download
+./tools/bootstrap-kinect-sdk.ps1 -Download
 ./tools/build.ps1 -ToolchainRoot C:\path\to\mingw64
 ./tools/test.ps1 -ToolchainRoot C:\path\to\mingw64
 ./tools/check-reproducible.ps1 -ToolchainRoot C:\path\to\mingw64
@@ -61,7 +63,7 @@ Prepare and test the webcam dependencies without installing Python:
 ```powershell
 ./tools/bootstrap-mediapipe.ps1 -Download
 ./tools/test.ps1 -SkipBuild -MediaPipe
-./tools/package.ps1 -Backend webcam -LocalEvaluation
+./tools/package.ps1 -Backend webcam
 ```
 
 Prepare the pinned OpenVR SDK/runtime and package the SteamVR backend:
@@ -73,13 +75,29 @@ Prepare the pinned OpenVR SDK/runtime and package the SteamVR backend:
 ./tools/package.ps1 -Backend steamvr
 ```
 
-The webcam package is currently labelled local evaluation. The MediaPipe
-runtime is Apache-2.0 and pinned, but the separately hosted Google `.task`
-model does not yet have explicit redistribution terms suitable for a public
-release. This gate does not affect local development or hardware testing.
+The MediaPipe runtime and Pose Landmarker model are Apache-2.0 and pinned by
+hash. Their upstream license and notice accompany the webcam archive.
 
 The currently reproduced toolchain is WinLibs GCC 16.2.0, MinGW-w64 14.0.0,
 UCRT, POSIX threads, SEH. See [reproducible-builds.md](docs/development/reproducible-builds.md).
+
+## Automated releases
+
+Pushing a tag in exact `vMAJOR.MINOR.PATCH` form starts the Windows release
+workflow. The tag version must match `project(... VERSION ...)` in
+`CMakeLists.txt`. The workflow prepares every pinned input, builds all three
+DLLs, runs the offline regression suite and byte-for-byte reproduction check,
+then creates one GitHub Release containing:
+
+- `dance_around_anygear_kinect.dll` directly, because it has no project runtime
+  files;
+- one webcam ZIP containing its MediaPipe runtime, model, and notices;
+- one SteamVR ZIP containing its OpenVR runtime and license;
+- the build manifest and `SHA256SUMS`.
+
+No release is created if any build, test, dependency hash, archive-layout, or
+reproducibility check fails. D4xx remains excluded until that target exists and
+passes hardware validation.
 
 Each backend exposes one Spice entry DLL containing the Spice entry point,
 VP4U ABI, backend defaults, stage diagnostics, and embedded DWARF information.
@@ -128,6 +146,7 @@ values, DANCE aROUND keeps Spice's aspect-correct centered default.
 - [Architecture and responsibilities](docs/architecture.md)
 - [Support matrix](docs/support-matrix.md)
 - [Runtime debugging](docs/development/debugging.md)
+- [Release workflow](docs/development/releases.md)
 - [MediaPipe webcam backend](docs/backends/mediapipe-webcam.md)
 - [SteamVR backend](docs/backends/steamvr.md)
 - [Spice integration](integration/spice2x/README.md)

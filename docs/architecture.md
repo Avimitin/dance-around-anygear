@@ -25,13 +25,13 @@ the safe initialization point used here.
 
 ## Backend layout
 
-Kinect release archives use this layout:
+The Kinect release asset uses this layout:
 
 ```text
 dance_around_anygear_kinect.dll
 ```
 
-Webcam evaluation archives use this layout:
+Webcam release archives use this layout:
 
 ```text
 dance_around_anygear_webcam.dll        <- only Spice -k target

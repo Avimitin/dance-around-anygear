@@ -9,10 +9,9 @@ extracts `libmediapipe.dll`, its Apache-2.0 `LICENSE`, and its `NOTICE` from the
 pinned official Windows wheel into the ignored `.deps/` directory.
 
 The separately hosted `pose_landmarker_lite.task` model is not part of this
-repository. Google documents its download for local projects, but explicit
-redistribution terms for that model bundle have not been verified. Therefore
-the packaging script permits it only in bundles labelled local evaluation and
-blocks public webcam release packaging.
+repository. Google identifies the Pose Landmarker model as Apache-2.0; the
+bootstrap pins the exact model by SHA-256 and release archives carry the
+MediaPipe license and notice.
 
 ## Spice SDK ABI
 
@@ -22,9 +21,10 @@ Spice is distributed under GNU GPL version 3.
 
 ## Kinect for Windows ABI
 
-The Kinect backend is compiled against `NuiApi.h` from a user-installed Kinect
-for Windows SDK 1.8 and dynamically resolves `Kinect10.dll` at runtime. The SDK
-headers, runtime, and import library are external build/runtime dependencies.
+The Kinect backend is compiled against headers statically extracted from a
+hash-pinned official Kinect for Windows SDK 1.8 installer and dynamically
+resolves `Kinect10.dll` at runtime. SDK files are held only in the ignored
+dependency cache; the runtime remains a user-installed dependency.
 
 ## Valve OpenVR
 

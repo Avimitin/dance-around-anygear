@@ -95,15 +95,15 @@ state changes. Detailed long-running diagnostics remain in `tools/`.
 
 ## Packaging boundary
 
-Create a complete bundle for local hardware/game evaluation with:
+Create a complete release bundle with:
 
 ```powershell
-./tools/package.ps1 -Backend webcam -LocalEvaluation
+./tools/package.ps1 -Backend webcam
 ```
 
-The MediaPipe runtime license and notice are carried beside it. The separately
-downloaded `.task` model remains a local input, so the script produces only a
-bundle labelled for local evaluation.
+The MediaPipe runtime, Pose Landmarker model, upstream license, and notice are
+carried together in the archive. Every input is checked against
+`dependency-lock.json` before packaging.
 
 ## Current validation boundary
 

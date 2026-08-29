@@ -1,12 +1,26 @@
 [CmdletBinding()]
 param(
-    [string] $ToolchainRoot = $env:ANYGEAR_TOOLCHAIN_ROOT
+    [string] $ToolchainRoot = $env:ANYGEAR_TOOLCHAIN_ROOT,
+    [string] $KinectSdkRoot = $env:ANYGEAR_KINECT_SDK_ROOT
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$RepositorySdk = Join-Path $RepositoryRoot '.deps\kinect\v1.8\sdk'
+if ([string]::IsNullOrWhiteSpace($KinectSdkRoot) -and
+    (Test-Path -LiteralPath $RepositorySdk -PathType Container)) {
+    $KinectSdkRoot = $RepositorySdk
+}
+if ([string]::IsNullOrWhiteSpace($KinectSdkRoot)) {
+    throw 'Kinect SDK headers are absent. Run tools/bootstrap-kinect-sdk.ps1 -Download first.'
+}
+$KinectSdkRoot = (Resolve-Path -LiteralPath $KinectSdkRoot).Path
+& (Join-Path $PSScriptRoot 'bootstrap-kinect-sdk.ps1') -SourceRoot $KinectSdkRoot
+if (-not $?) {
+    throw 'Kinect SDK dependency verification failed.'
+}
 $OpenVrRoot = Join-Path $RepositoryRoot '.deps\openvr\v2.15.6'
 if (-not (Test-Path -LiteralPath $OpenVrRoot -PathType Container)) {
     throw 'OpenVR SDK is absent. Run tools/bootstrap-openvr.ps1 -Download first.'
@@ -61,6 +75,7 @@ foreach ($name in @('a', 'b')) {
         '-DANYGEAR_BUILD_TESTS=OFF',
         '-DANYGEAR_BUILD_WEBCAM=ON',
         '-DANYGEAR_BUILD_STEAMVR=ON',
+        "-DANYGEAR_KINECT_SDK_ROOT=$KinectSdkRoot",
         "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot"
     )
     Write-Host "[REPRO $name] configure"

@@ -40,8 +40,15 @@ required or committed.
 
 ## External runtimes
 
-Kinect builds use `NuiApi.h` from an installed Kinect for Windows SDK 1.8.
-The resulting plugin resolves `Kinect10.dll` at runtime.
+Kinect builds use the four NUI headers from Kinect for Windows SDK 1.8. The
+bootstrap downloads Microsoft's official `KinectSDK-v1.8-Setup.exe`, verifies
+its pinned SHA-256, and reads the x64 SDK payload with 7-Zip without launching
+or installing the bundle. Each extracted header is checked independently. The
+resulting plugin resolves the user's installed `Kinect10.dll` at runtime.
+
+```powershell
+./tools/bootstrap-kinect-sdk.ps1 -Download
+```
 
 The webcam backend pins these external inputs in `dependency-lock.json`:
 
@@ -69,11 +76,9 @@ or caller-supplied offline files:
 ```
 
 Both paths verify every input and extracted output before use. The source tree
-never receives the wheel, DLL, model, or test image. The runtime itself is
-Apache-2.0 and its `LICENSE`/`NOTICE` accompany local bundles. Public webcam
-packaging remains blocked because explicit redistribution terms for Google's
-separately hosted `.task` model have not been verified; `-LocalEvaluation` is
-an intentional, labelled local-testing option.
+never receives the wheel, DLL, model, or test image. The runtime and Pose
+Landmarker model are Apache-2.0; the runtime `LICENSE`/`NOTICE` accompany
+release bundles.
 
 The SteamVR backend pins Valve OpenVR `v2.15.6` at commit
 `0924064316de3effbcd1acf1e309182a2deb1c05`. The generated C API header,
@@ -97,6 +102,7 @@ hash match:
 ```
 
 The build maps both source and binary directories out of DWARF, retains the
-debug sections, and disables the PE timestamp. Kinect, webcam, and SteamVR entry
-DLLs must match byte-for-byte. Package ZIP container timestamps may differ;
-the files listed in `SHA256SUMS` are the reproducibility boundary.
+debug sections, and disables the PE timestamp. Kinect, webcam, and SteamVR
+entry DLLs must match byte-for-byte. Package files are sorted and every ZIP
+entry receives the fixed DOS epoch timestamp, so repeated packaging from the
+same DLLs and pinned dependencies is byte-for-byte stable as well.

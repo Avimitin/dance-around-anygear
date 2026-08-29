@@ -1,0 +1,122 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, test, and publish Windows assets
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ANYGEAR_TOOLCHAIN_ROOT: ${{ github.workspace }}\.deps\toolchain\mingw64
+      ANYGEAR_KINECT_SDK_ROOT: ${{ github.workspace }}\.deps\kinect\v1.8\sdk
+      ANYGEAR_OPENVR_SDK_ROOT: ${{ github.workspace }}\.deps\openvr\v2.15.6
+
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate the release tag and source tree
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REF_NAME -notmatch '^v(\d+\.\d+\.\d+)$') {
+              throw "Release tags must use vMAJOR.MINOR.PATCH: $env:GITHUB_REF_NAME"
+          }
+          $version = $Matches[1]
+          $cmake = Get-Content -LiteralPath CMakeLists.txt -Raw
+          if ($cmake -notmatch 'project\(dance_around_anygear VERSION ([0-9]+\.[0-9]+\.[0-9]+)') {
+              throw 'Unable to read the project version from CMakeLists.txt.'
+          }
+          if ($Matches[1] -ne $version) {
+              throw "Tag version $version does not match project version $($Matches[1])."
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          ./tools/verify-source-tree.ps1
+
+      - name: Restore pinned dependency cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: .deps
+          key: windows-2025-anygear-deps-v1-${{ hashFiles('dependency-lock.json', 'tools/bootstrap-*.ps1') }}
+
+      - name: Prepare the pinned build inputs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/bootstrap-toolchain.ps1 -Download
+          ./tools/bootstrap-kinect-sdk.ps1 -Download
+          ./tools/bootstrap-openvr.ps1 -Download
+          ./tools/bootstrap-mediapipe.ps1 -Download
+
+      - name: Build every backend DLL
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/build.ps1 -ToolchainRoot $env:ANYGEAR_TOOLCHAIN_ROOT -Clean
+
+      - name: Run offline loader, ABI, pose, and MediaPipe tests
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/test.ps1 -SkipBuild -MediaPipe
+
+      - name: Require byte-for-byte reproducible DLLs
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/check-reproducible.ps1 -ToolchainRoot $env:ANYGEAR_TOOLCHAIN_ROOT
+
+      - name: Stage camera-specific release assets
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/stage-release.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          & gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+              throw "Release $tag already exists; refusing to replace published assets."
+          }
+
+          $notes = @'
+          Camera-specific assets:
+
+          - `dance_around_anygear_kinect.dll`: standalone Kinect for Windows v1 plugin.
+          - `dance-around-anygear-*-webcam-win64.zip`: webcam plugin, MediaPipe runtime, Pose Landmarker model, and notices.
+          - `dance-around-anygear-*-steamvr-win64.zip`: SteamVR plugin, OpenVR client runtime, and license.
+          - `SHA256SUMS`: hashes for every runtime asset and the build manifest.
+
+          Extract ZIP assets without changing their internal directory layout. Spice still receives only the backend DLL through `-k`.
+          '@
+          $notesPath = Join-Path $env:RUNNER_TEMP 'dance-around-anygear-release-notes.md'
+          [IO.File]::WriteAllText(
+              $notesPath, $notes.Trim() + "`n", [Text.UTF8Encoding]::new($false))
+          $assets = @(Get-ChildItem -LiteralPath artifacts/release -File |
+              Sort-Object Name | ForEach-Object FullName)
+          if ($assets.Count -ne 5) {
+              throw "Expected five release assets, found $($assets.Count)."
+          }
+          & gh release create $tag @assets `
+              --repo $env:GITHUB_REPOSITORY `
+              --verify-tag `
+              --title "dance-around-anygear $tag" `
+              --notes-file $notesPath `
+              --generate-notes
+          if ($LASTEXITCODE -ne 0) {
+              throw "GitHub release creation failed with exit code $LASTEXITCODE."
+          }

@@ -4,8 +4,7 @@ param(
     [string] $Backend = 'kinect',
     [string] $Version = '0.3.0',
     [string] $MediaPipeRoot,
-    [string] $OpenVrRoot,
-    [switch] $LocalEvaluation
+    [string] $OpenVrRoot
 )
 
 Set-StrictMode -Version Latest
@@ -15,13 +14,59 @@ $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Pat
 $BuildRoot = Join-Path $RepositoryRoot 'build'
 $BinRoot = Join-Path $BuildRoot 'bin'
 $DistRoot = Join-Path $RepositoryRoot 'dist'
-if ($Backend -eq 'webcam' -and -not $LocalEvaluation) {
-    throw 'Public webcam packaging is gated until the Pose Landmarker model redistribution terms are explicit. Use -LocalEvaluation for a local test bundle.'
-}
 $PackageName = "dance-around-anygear-v$Version-$Backend-win64"
-if ($Backend -eq 'webcam') { $PackageName += '-local-evaluation' }
 $StageRoot = Join-Path $DistRoot $PackageName
 $ZipPath = Join-Path $DistRoot "$PackageName.zip"
+
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory)][string] $Path,
+        [Parameter(Mandatory)][string] $Value
+    )
+    $Normalized = $Value.TrimEnd("`r", "`n") + "`n"
+    [IO.File]::WriteAllText(
+        $Path, $Normalized, [Text.UTF8Encoding]::new($false))
+}
+
+function New-DeterministicZip {
+    param(
+        [Parameter(Mandatory)][string] $SourceRoot,
+        [Parameter(Mandatory)][string] $Destination
+    )
+
+    Add-Type -AssemblyName System.IO.Compression
+    $Output = [IO.File]::Open(
+        $Destination, [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $Archive = [IO.Compression.ZipArchive]::new(
+        $Output, [IO.Compression.ZipArchiveMode]::Create, $false)
+    try {
+        $FixedTime = [DateTimeOffset]::new(
+            1980, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+        $Files = Get-ChildItem -LiteralPath $SourceRoot -Recurse -File |
+            Sort-Object FullName
+        foreach ($File in $Files) {
+            $EntryName = $File.FullName.Substring(
+                $DistRoot.Length + 1).Replace('\', '/')
+            $Entry = $Archive.CreateEntry(
+                $EntryName, [IO.Compression.CompressionLevel]::Optimal)
+            $Entry.LastWriteTime = $FixedTime
+            $Input = [IO.File]::OpenRead($File.FullName)
+            $EntryStream = $Entry.Open()
+            try {
+                $Input.CopyTo($EntryStream)
+            }
+            finally {
+                $EntryStream.Dispose()
+                $Input.Dispose()
+            }
+        }
+    }
+    finally {
+        $Archive.Dispose()
+        $Output.Dispose()
+    }
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $BuildRoot 'build-manifest.json') -PathType Leaf)) {
     throw 'Build manifest missing. Run tools/build.ps1 and tools/test.ps1 first.'
@@ -67,7 +112,7 @@ if ($Backend -eq 'webcam') {
         Copy-Item -LiteralPath $Source -Destination $DependencyDestination
     }
     $Readme = @"
-dance-around-anygear $Version - MediaPipe USB webcam LOCAL EVALUATION
+dance-around-anygear $Version - MediaPipe USB webcam
 
 Copy the full extracted layout beside Spice and load only:
     -k $PluginName
@@ -76,9 +121,9 @@ Spice loads only the Anygear DLL. It locates libmediapipe.dll and the Pose
 Landmarker model in .\dance_around_anygear_webcam by absolute path. Python,
 OpenCV, a helper process, and network access are not required at runtime.
 
-This bundle is marked local-evaluation because Google publishes the model
-download but not explicit redistribution terms for the separate .task file.
-Do not publish this ZIP until that release gate is resolved.
+The MediaPipe runtime and Pose Landmarker model are distributed under
+Apache License 2.0. The upstream LICENSE and NOTICE files are included in
+the dependency directory.
 
 Logs are compact: stage 1/4..4/4 cover Spice loading/redirection and runtime
 1/5..5/5 cover VP4U entry, API table, MediaPipe init, USB camera, and analysis.
@@ -156,7 +201,7 @@ Unity entering VP4U, the ABI table, initialization, Kinect open, and analysis.
 When reporting a failure, include the last completed stage and the DLL hash.
 "@
 }
-$Readme | Set-Content -LiteralPath (Join-Path $StageRoot 'README.txt') -Encoding UTF8
+Write-Utf8NoBom -Path (Join-Path $StageRoot 'README.txt') -Value $Readme
 
 $Files = Get-ChildItem -LiteralPath $StageRoot -Recurse -File | Sort-Object FullName
 $Hashes = foreach ($file in $Files) {
@@ -164,7 +209,10 @@ $Hashes = foreach ($file in $Files) {
     $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
     "$hash  $relative"
 }
-$Hashes | Set-Content -LiteralPath (Join-Path $StageRoot 'SHA256SUMS') -Encoding ASCII
-Compress-Archive -LiteralPath $StageRoot -DestinationPath $ZipPath -CompressionLevel Optimal
+[IO.File]::WriteAllText(
+    (Join-Path $StageRoot 'SHA256SUMS'),
+    (($Hashes -join "`n") + "`n"),
+    [Text.Encoding]::ASCII)
+New-DeterministicZip -SourceRoot $StageRoot -Destination $ZipPath
 Write-Host "[OK] Package: $ZipPath"
 Write-Host "     SHA-256: $((Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash)"

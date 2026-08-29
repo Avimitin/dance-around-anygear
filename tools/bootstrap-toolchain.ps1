@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $ArchiveName = 'winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip'
-$ArchiveUrl = 'https://sourceforge.net/projects/winlibs-mingw/files/16.2.0posix-14.0.0-ucrt-r1/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip/download'
+$ArchiveUrl = 'https://downloads.sourceforge.net/project/winlibs-mingw/16.2.0posix-14.0.0-ucrt-r1/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip?download=1'
 $ExpectedHash = 'C1F52294597C0B73786B2A78EB5D176D89226D2F21875EAB75E783A8B1CEFCC4'
 
 if ($Download) {
@@ -26,7 +26,12 @@ if ($Download) {
         $TemporaryArchive = "$Archive.$([Guid]::NewGuid().ToString('N')).partial"
         try {
             Write-Host "[DOWNLOAD] $ArchiveUrl"
-            Invoke-WebRequest -UseBasicParsing -Uri $ArchiveUrl -OutFile $TemporaryArchive
+            $CurlExe = (Get-Command curl.exe -ErrorAction Stop).Source
+            & $CurlExe --fail --location --silent --show-error --retry 3 `
+                --output $TemporaryArchive $ArchiveUrl
+            if ($LASTEXITCODE -ne 0) {
+                throw "Toolchain download failed with exit code $LASTEXITCODE."
+            }
             $DownloadedHash = (Get-FileHash -LiteralPath $TemporaryArchive -Algorithm SHA256).Hash
             if ($DownloadedHash -ne $ExpectedHash) {
                 throw "Downloaded toolchain hash mismatch. Expected $ExpectedHash, got $DownloadedHash."

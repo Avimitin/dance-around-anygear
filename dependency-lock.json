@@ -7,12 +7,30 @@
     "cmake": "4.4.2",
     "ninja": "1.13.2",
     "archiveFile": "winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip",
-    "archiveUrl": "https://sourceforge.net/projects/winlibs-mingw/files/16.2.0posix-14.0.0-ucrt-r1/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip/download",
+    "archiveUrl": "https://downloads.sourceforge.net/project/winlibs-mingw/16.2.0posix-14.0.0-ucrt-r1/winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r1.zip?download=1",
     "archiveBytes": 274029684,
     "archiveSha256": "C1F52294597C0B73786B2A78EB5D176D89226D2F21875EAB75E783A8B1CEFCC4",
     "archiveCommitted": false
   },
   "kinectV1": {
+    "sdkVersion": "1.8.0.595",
+    "installer": {
+      "file": "KinectSDK-v1.8-Setup.exe",
+      "url": "https://download.microsoft.com/download/E/1/D/E1DEC243-0389-4A23-87BF-F47DE869FC1A/KinectSDK-v1.8-Setup.exe",
+      "bytes": 233219096,
+      "sha256": "0574651D5576EBD332307DF57C44922F85C569416CD0D75B59D1F99BBE8D1B53"
+    },
+    "x64SdkMsi": {
+      "file": "KinectSDK-v1.8-x64.msi",
+      "bytes": 1376256,
+      "sha256": "EE14D090A326298E4FA68CF309092B2AA78FEB6E908AE3132547F2B85A5E6E9D"
+    },
+    "headers": {
+      "NuiApi.h": "9664880CC330CD2CFA23DEC9BFF823789543098F8631F5F70F0924D7B3F17997",
+      "NuiImageCamera.h": "E0D60CC5A67075767C9D433B3048E85600E7581C2C8FC2ECE40894AC45DE2E5D",
+      "NuiSensor.h": "162766BC54A6DB7BE9E13B9DFDE22625A73B1B8D4160A7D434BEA45E9338CFFA",
+      "NuiSkeleton.h": "108A9A5118752FBB186ECAB92058D9374ACFA75B7E3AAE9EAAF4DD1203AFFFB2"
+    },
     "runtime": "Kinect for Windows SDK 1.8",
     "dll": "Kinect10.dll",
     "redistributed": false
@@ -59,8 +77,10 @@
       "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
       "bytes": 5777746,
       "sha256": "59929E1D1EE95287735DDD833B19CF4AC46D29BC7AFDDBBF6753C459690D574A",
-      "redistributionTermsVerified": false,
-      "reason": "Google documents downloading the model for local projects but does not publish explicit redistribution terms for this separate model bundle. Public release packaging remains gated."
+      "license": "Apache-2.0",
+      "redistributionTermsVerified": true,
+      "licenseEvidence": "https://github.com/google-ai-edge/mediapipe/issues/6306#issuecomment-4673728357",
+      "verifiedOn": "2026-08-29"
     },
     "testImage": {
       "url": "https://storage.googleapis.com/mediapipe-assets/tasks/testdata/vision/pose.jpg?generation=1782185208547605",
