@@ -24,6 +24,8 @@ static constexpr char kBackendName[] = "kinect";
 static constexpr char kBackendName[] = "webcam";
 #elif defined(ANYGEAR_BACKEND_STEAMVR)
 static constexpr char kBackendName[] = "steamvr";
+#elif defined(ANYGEAR_BACKEND_D4XX)
+static constexpr char kBackendName[] = "d4xx";
 #else
 #error Define exactly one ANYGEAR_BACKEND_* target.
 #endif
@@ -379,7 +381,8 @@ size_t patch_loaded_modules() {
     return count;
 }
 
-#if defined(ANYGEAR_BACKEND_KINECT) || defined(ANYGEAR_BACKEND_STEAMVR)
+#if defined(ANYGEAR_BACKEND_KINECT) || defined(ANYGEAR_BACKEND_STEAMVR) || \
+    defined(ANYGEAR_BACKEND_D4XX)
 void set_environment_default(const wchar_t *name, const wchar_t *value) {
     const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
     if (required == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
@@ -397,6 +400,10 @@ void configure_backend() {
 #elif defined(ANYGEAR_BACKEND_STEAMVR)
     set_environment_default(L"VP4U_CAPTURE_FPS", L"60");
     set_environment_default(L"VP4U_PREVIEW_FPS", L"1");
+    set_environment_default(L"VP4U_IMAGE_POOL_MAX", L"12");
+#elif defined(ANYGEAR_BACKEND_D4XX)
+    set_environment_default(L"VP4U_CAPTURE_FPS", L"30");
+    set_environment_default(L"VP4U_PREVIEW_FPS", L"15");
     set_environment_default(L"VP4U_IMAGE_POOL_MAX", L"12");
 #endif
 }
@@ -505,6 +512,10 @@ extern "C" __declspec(dllexport) int __cdecl spice_sdk_entry_point(
     log_message(ANYGEAR_SPICE_LOG_INFO,
         "stage 2/4: SteamVR tracked-pose profile selected "
         "(standing space, 60 Hz, no RGB, strict six-point body)");
+#elif defined(ANYGEAR_BACKEND_D4XX)
+    log_message(ANYGEAR_SPICE_LOG_INFO,
+        "stage 2/4: D4xx depth/infrared profile selected "
+        "(two devices, IR-to-BGR24 pose input, metric depth, 30 Hz)");
 #else
     log_message(ANYGEAR_SPICE_LOG_INFO,
         "stage 2/4: MediaPipe USB webcam profile selected "

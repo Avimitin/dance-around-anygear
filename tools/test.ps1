@@ -44,6 +44,7 @@ New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 $KinectPlugin = Join-Path $BinRoot 'dance_around_anygear_kinect.dll'
 $WebcamPlugin = Join-Path $BinRoot 'dance_around_anygear_webcam.dll'
 $SteamVrPlugin = Join-Path $BinRoot 'dance_around_anygear_steamvr.dll'
+$D4xxPlugin = Join-Path $BinRoot 'dance_around_anygear_d4xx.dll'
 $LoaderSmoke = Join-Path $BinRoot 'anygear_loader_smoke.exe'
 $Harness = Join-Path $BinRoot 'anygear_vp4u_harness.exe'
 $KinectProbe = Join-Path $BinRoot 'anygear_kinect_probe.exe'
@@ -52,7 +53,8 @@ $MediaPipeProbe = Join-Path $BinRoot 'anygear_mediapipe_probe.exe'
 $SteamVrPoseTest = Join-Path $BinRoot 'anygear_steamvr_pose_test.exe'
 $SteamVrProbe = Join-Path $BinRoot 'anygear_steamvr_probe.exe'
 foreach ($required in @(
-    $KinectPlugin, $WebcamPlugin, $SteamVrPlugin, $LoaderSmoke, $Harness,
+    $KinectPlugin, $WebcamPlugin, $SteamVrPlugin, $D4xxPlugin,
+    $LoaderSmoke, $Harness,
     $KinectProbe, $WebcamProbe, $MediaPipeProbe, $SteamVrPoseTest,
     $SteamVrProbe)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -62,14 +64,17 @@ foreach ($required in @(
 Copy-Item -LiteralPath $KinectPlugin -Destination $StageRoot
 Copy-Item -LiteralPath $WebcamPlugin -Destination $StageRoot
 Copy-Item -LiteralPath $SteamVrPlugin -Destination $StageRoot
+Copy-Item -LiteralPath $D4xxPlugin -Destination $StageRoot
 $StagedKinectPlugin = Join-Path $StageRoot 'dance_around_anygear_kinect.dll'
 $StagedWebcamPlugin = Join-Path $StageRoot 'dance_around_anygear_webcam.dll'
 $StagedSteamVrPlugin = Join-Path $StageRoot 'dance_around_anygear_steamvr.dll'
+$StagedD4xxPlugin = Join-Path $StageRoot 'dance_around_anygear_d4xx.dll'
 
 foreach ($entry in @(
     @{ Name = 'Kinect'; Path = $StagedKinectPlugin },
     @{ Name = 'MediaPipe webcam'; Path = $StagedWebcamPlugin },
-    @{ Name = 'SteamVR'; Path = $StagedSteamVrPlugin })) {
+    @{ Name = 'SteamVR'; Path = $StagedSteamVrPlugin },
+    @{ Name = 'RealSense D4xx'; Path = $StagedD4xxPlugin })) {
     Write-Host "[TEST] $($entry.Name) Spice loader fallback..."
     & $LoaderSmoke $entry.Path
     if ($LASTEXITCODE -ne 0) {

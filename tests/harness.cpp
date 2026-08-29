@@ -237,8 +237,17 @@ int main(int argc, char** argv) {
     intptr_t init_h = T.Initialize();
     std::fprintf(stderr, "Initialize() -> %lld\n", (long long)init_h);
 
-    if (argc > 2 && std::strcmp(argv[2], "--pose-init-only") == 0) {
-        T.LoadConfig(nullptr);
+    const bool pose_init_only = argc > 2 &&
+        std::strcmp(argv[2], "--pose-init-only") == 0;
+    const bool pose_init_config = argc > 2 &&
+        std::strcmp(argv[2], "--pose-init-config") == 0;
+    if (pose_init_only || pose_init_config) {
+        if (pose_init_config && argc < 4) {
+            std::fprintf(stderr,
+                "--pose-init-config requires a VP4U JSON path\n");
+            return 2;
+        }
+        T.LoadConfig(pose_init_config ? argv[3] : nullptr);
         const int result = T.InitVisionPoseRealtime("dummy-key");
         T.Shutdown();
         pShutdown();

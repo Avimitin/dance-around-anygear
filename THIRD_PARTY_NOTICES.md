@@ -1,5 +1,12 @@
 # Third-party notices
 
+## nlohmann/json
+
+`third_party/nlohmann/json.hpp` is the standalone header from nlohmann/json
+`v3.12.0`, vendored byte-for-byte from the official release asset and pinned by
+SHA-256 in `dependency-lock.json`. It is licensed under the MIT License; the
+upstream license text is preserved at `third_party/nlohmann/LICENSE.MIT`.
+
 ## Google MediaPipe
 
 `src/vp4u/mediapipe_c_api.h` is a minimal ABI declaration derived from the

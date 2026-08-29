@@ -9,6 +9,57 @@ The D430 path uses depth and infrared only. A color sensor and RGB frames are
 not required. The NVIDIA dependencies run the existing pose model; they are
 unrelated to RealSense capture.
 
+## Per-installation placement JSON
+
+The D4xx DLL reads `dance_around_anygear_d4xx.json` from the directory beside
+the DLL at startup. This file is the supported place for room- and
+mount-specific settings; do not edit the game's original JSON and do not put
+these values in a long launch script. Start from
+[`config/dance_around_anygear_d4xx.json`](../../config/dance_around_anygear_d4xx.json)
+and keep the same filename beside the DLL.
+
+`PrimarySerial` selects the D430 whose infrared image drives pose recognition.
+When it is empty, `PrimaryDevice` selects by the librealsense enumeration
+index. The serial-number setting wins over the index and is recommended after
+the better camera has been identified. Startup logs list both serial numbers.
+`InfraredIndex` selects the left (`1`) or right (`2`) infrared imager.
+The DLL uses librealsense's alignment block so the depth map and the selected
+infrared imager share one pixel grid. It also retains the aligned depth packet
+that belongs to each pose input until inference completes; changing to IR 2
+does not make the pose sample against a newer or left-imager depth frame.
+
+`AutoCenterZ` samples the first stable hip depth and maps it to `StageHipZ`.
+Keep it enabled for normal home setups: it lets a shorter or longer room use
+the same game-safe virtual standing distance. `OffsetX`, `OffsetY`, and
+`OffsetZ` are additional metre offsets in final stage coordinates.
+
+`PitchDegrees`, `YawDegrees`, and `RollDegrees` compensate for a camera that is
+not mounted level. The rotations are applied around the live hip, so changing
+an angle does not move the player across the stage. They use a right-handed
+coordinate system: X is pitch, Y is yaw, Z is roll, +Y points up, and +Z points
+away from the camera. Tune pitch first in small 1-2 degree steps. Configuration
+is loaded once; restart the game after editing the file.
+
+Use this tuning order:
+
+1. Pick the device and infrared index that show the complete body with the
+   least occlusion. No coordinate parameter can reconstruct hands or feet that
+   are outside the selected image.
+2. Leave `AutoCenterZ` enabled and `StageHipZ` at `2.3` unless a game-specific
+   safe zone requires a different virtual depth.
+3. Adjust pitch/yaw/roll until a neutral standing skeleton is upright.
+4. Use XYZ offsets only to align the already-correct skeleton to the stage.
+5. Lower `Smoothing` for steadier but slower motion; raise it for faster but
+   noisier response. `0.65` is the low-latency default; use roughly `0.50`
+   through `0.80` for room tuning.
+6. Keep `OutputFps` at `30`. Pose inference runs independently and the output
+   worker resamples it to the stable VP4U cadence. `PredictionMs` compensates
+   for capture/inference age; start at `20` and avoid values over `50` unless
+   fast-motion overshoot has been checked in game.
+7. `BodyHoldMs` applies only after pose inference is lost. The `250` ms default
+   bridges a brief occlusion without keeping an obsolete hand or foot attached
+   to another limb for seconds.
+
 ## Required versions
 
 | Component | Required version | Why it is pinned | Official download |

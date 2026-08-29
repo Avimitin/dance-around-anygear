@@ -35,6 +35,23 @@
     "dll": "Kinect10.dll",
     "redistributed": false
   },
+  "nlohmannJson": {
+    "sourceRepository": "https://github.com/nlohmann/json",
+    "sourceTag": "v3.12.0",
+    "sourceCommit": "55f93686c01528224f448c19128836e7df245f72",
+    "license": "MIT",
+    "singleHeader": {
+      "file": "third_party/nlohmann/json.hpp",
+      "url": "https://github.com/nlohmann/json/releases/download/v3.12.0/json.hpp",
+      "bytes": 953436,
+      "sha256": "AAF127C04CB31C406E5B04A63F1AE89369FCCDE6D8FA7CDDA1ED4F32DFC5DE63"
+    },
+    "licenseFile": {
+      "file": "third_party/nlohmann/LICENSE.MIT",
+      "bytes": 1076,
+      "sha256": "46A65CFFD1EA955132D95A8DD921640714A8D6B537D2E4E482D31145AE95B603"
+    }
+  },
   "openVr": {
     "sourceRepository": "https://github.com/ValveSoftware/openvr.git",
     "sourceTag": "v2.15.6",

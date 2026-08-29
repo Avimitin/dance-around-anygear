@@ -2,10 +2,26 @@ cmake_minimum_required(VERSION 3.24)
 
 project(dance_around_anygear VERSION 0.3.0 LANGUAGES C CXX)
 
+set(ANYGEAR_NLOHMANN_JSON_HEADER
+    "${CMAKE_SOURCE_DIR}/third_party/nlohmann/json.hpp")
+set(ANYGEAR_NLOHMANN_JSON_SHA256
+    "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63")
+if(NOT EXISTS "${ANYGEAR_NLOHMANN_JSON_HEADER}")
+    message(FATAL_ERROR "Vendored nlohmann/json header is absent")
+endif()
+file(SHA256 "${ANYGEAR_NLOHMANN_JSON_HEADER}"
+    ANYGEAR_NLOHMANN_JSON_ACTUAL_SHA256)
+if(NOT ANYGEAR_NLOHMANN_JSON_ACTUAL_SHA256 STREQUAL
+   ANYGEAR_NLOHMANN_JSON_SHA256)
+    message(FATAL_ERROR
+        "Vendored nlohmann/json v3.12.0 header hash mismatch")
+endif()
+
 option(ANYGEAR_BUILD_TESTS "Build native smoke and hardware harnesses" ON)
 option(ANYGEAR_BUILD_KINECT "Build the Kinect for Windows v1 selector" ON)
 option(ANYGEAR_BUILD_WEBCAM "Build the MediaPipe USB webcam selector" ON)
 option(ANYGEAR_BUILD_STEAMVR "Build the SteamVR tracked-pose selector" ON)
+option(ANYGEAR_BUILD_D4XX "Build the RealSense D4xx depth/IR selector" ON)
 
 if(ANYGEAR_BUILD_KINECT)
     set(ANYGEAR_KINECT_SDK_ROOT "$ENV{KINECTSDK10_DIR}" CACHE PATH
@@ -43,6 +59,26 @@ if(ANYGEAR_BUILD_STEAMVR)
     endif()
 endif()
 
+if(ANYGEAR_BUILD_D4XX)
+    set(_ANYGEAR_LIBREALSENSE_DEFAULT
+        "${CMAKE_SOURCE_DIR}/.deps/librealsense/v2.50.0/include")
+    if(DEFINED ENV{ANYGEAR_LIBREALSENSE_INCLUDE_DIR} AND
+       NOT "$ENV{ANYGEAR_LIBREALSENSE_INCLUDE_DIR}" STREQUAL "")
+        set(_ANYGEAR_LIBREALSENSE_DEFAULT
+            "$ENV{ANYGEAR_LIBREALSENSE_INCLUDE_DIR}")
+    endif()
+    set(ANYGEAR_LIBREALSENSE_INCLUDE_DIR
+        "${_ANYGEAR_LIBREALSENSE_DEFAULT}" CACHE PATH
+        "Directory containing librealsense2/rs.h")
+    if(NOT EXISTS
+       "${ANYGEAR_LIBREALSENSE_INCLUDE_DIR}/librealsense2/rs.h")
+        message(FATAL_ERROR
+            "librealsense C headers were not found. Run the pinned D4xx "
+            "bootstrap, set ANYGEAR_LIBREALSENSE_INCLUDE_DIR, or configure "
+            "ANYGEAR_BUILD_D4XX=OFF.")
+    endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -75,17 +111,26 @@ function(anygear_add_selector target backend_define output_name)
     set(sensor_sources
         src/vp4u/kinect_unavailable.cpp
         src/vp4u/steamvr_unavailable.cpp
+        src/vp4u/d4xx_unavailable.cpp
     )
     if("${backend_define}" STREQUAL "ANYGEAR_BACKEND_KINECT=1")
         set(sensor_sources
             src/vp4u/kinect.cpp
             src/vp4u/steamvr_unavailable.cpp
+            src/vp4u/d4xx_unavailable.cpp
         )
     elseif("${backend_define}" STREQUAL "ANYGEAR_BACKEND_STEAMVR=1")
         set(sensor_sources
             src/vp4u/kinect_unavailable.cpp
             src/vp4u/steamvr.cpp
             src/vp4u/steamvr_pose.cpp
+            src/vp4u/d4xx_unavailable.cpp
+        )
+    elseif("${backend_define}" STREQUAL "ANYGEAR_BACKEND_D4XX=1")
+        set(sensor_sources
+            src/vp4u/kinect_unavailable.cpp
+            src/vp4u/steamvr_unavailable.cpp
+            src/vp4u/d4xx.cpp
         )
     endif()
     add_library(${target} SHARED
@@ -97,6 +142,9 @@ function(anygear_add_selector target backend_define output_name)
         include
         src
     )
+    target_include_directories(${target} SYSTEM PRIVATE
+        third_party
+    )
     if("${backend_define}" STREQUAL "ANYGEAR_BACKEND_KINECT=1")
         target_include_directories(${target} SYSTEM PRIVATE
             "${ANYGEAR_KINECT_INCLUDE_DIR}"
@@ -105,6 +153,11 @@ function(anygear_add_selector target backend_define output_name)
     if("${backend_define}" STREQUAL "ANYGEAR_BACKEND_STEAMVR=1")
         target_include_directories(${target} SYSTEM PRIVATE
             "${ANYGEAR_OPENVR_INCLUDE_DIR}"
+        )
+    endif()
+    if("${backend_define}" STREQUAL "ANYGEAR_BACKEND_D4XX=1")
+        target_include_directories(${target} SYSTEM PRIVATE
+            "${ANYGEAR_LIBREALSENSE_INCLUDE_DIR}"
         )
     endif()
     target_compile_definitions(${target} PRIVATE
@@ -156,6 +209,14 @@ if(ANYGEAR_BUILD_STEAMVR)
         anygear_steamvr
         ANYGEAR_BACKEND_STEAMVR=1
         dance_around_anygear_steamvr
+    )
+endif()
+
+if(ANYGEAR_BUILD_D4XX)
+    anygear_add_selector(
+        anygear_d4xx
+        ANYGEAR_BACKEND_D4XX=1
+        dance_around_anygear_d4xx
     )
 endif()
 
@@ -212,6 +273,31 @@ if(ANYGEAR_BUILD_TESTS)
         target_compile_options(anygear_steamvr_probe PRIVATE
             ${ANYGEAR_COMMON_WARNINGS})
         set_target_properties(anygear_steamvr_probe PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+        )
+    endif()
+
+    if(ANYGEAR_BUILD_D4XX)
+        add_executable(anygear_d4xx_probe
+            tests/d4xx_probe.cpp
+            src/vp4u/d4xx.cpp
+            src/vp4u/webcam.cpp
+            src/vp4u/pose.cpp
+        )
+        target_include_directories(anygear_d4xx_probe PRIVATE src)
+        target_include_directories(anygear_d4xx_probe SYSTEM PRIVATE
+            "${ANYGEAR_LIBREALSENSE_INCLUDE_DIR}"
+        )
+        target_compile_options(anygear_d4xx_probe PRIVATE
+            ${ANYGEAR_COMMON_WARNINGS})
+        target_link_libraries(anygear_d4xx_probe PRIVATE
+            mfplat
+            mf
+            mfreadwrite
+            mfuuid
+            ole32
+        )
+        set_target_properties(anygear_d4xx_probe PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
         )
     endif()
@@ -300,6 +386,20 @@ if(ANYGEAR_BUILD_TESTS)
         add_test(
             NAME anygear_steamvr_vp4u_abi
             COMMAND anygear_vp4u_harness $<TARGET_FILE:anygear_steamvr> --abi-only
+        )
+    endif()
+    if(ANYGEAR_BUILD_D4XX)
+        add_test(
+            NAME anygear_d4xx_loader_fallback
+            COMMAND anygear_loader_smoke $<TARGET_FILE:anygear_d4xx>
+        )
+        add_test(
+            NAME anygear_d4xx_loader_spice_sdk
+            COMMAND anygear_loader_smoke $<TARGET_FILE:anygear_d4xx> --sdk-hook
+        )
+        add_test(
+            NAME anygear_d4xx_vp4u_abi
+            COMMAND anygear_vp4u_harness $<TARGET_FILE:anygear_d4xx> --abi-only
         )
     endif()
 endif()

@@ -3,6 +3,7 @@ param(
     [string] $ToolchainRoot = $env:ANYGEAR_TOOLCHAIN_ROOT,
     [string] $KinectSdkRoot = $env:ANYGEAR_KINECT_SDK_ROOT,
     [string] $OpenVrRoot = $env:ANYGEAR_OPENVR_SDK_ROOT,
+    [string] $LibrealsenseIncludeDir = $env:ANYGEAR_LIBREALSENSE_INCLUDE_DIR,
     [ValidateSet('Release', 'Debug')]
     [string] $Configuration = 'Release',
     [switch] $Clean,
@@ -39,6 +40,14 @@ if ([string]::IsNullOrWhiteSpace($OpenVrRoot)) {
 if (-not (Test-Path -LiteralPath $OpenVrRoot -PathType Container)) {
     throw 'OpenVR SDK is absent. Run tools/bootstrap-openvr.ps1 -Download first.'
 }
+
+if ([string]::IsNullOrWhiteSpace($LibrealsenseIncludeDir)) {
+    $LibrealsenseIncludeDir = Join-Path $RepositoryRoot '.deps\librealsense\v2.50.0\include'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $LibrealsenseIncludeDir 'librealsense2\rs.h') -PathType Leaf)) {
+    throw 'librealsense 2.50.0 C headers are absent. Supply -LibrealsenseIncludeDir from the pinned source tree.'
+}
+$LibrealsenseIncludeDir = (Resolve-Path -LiteralPath $LibrealsenseIncludeDir).Path
 $OpenVrRoot = (Resolve-Path -LiteralPath $OpenVrRoot).Path
 & (Join-Path $PSScriptRoot 'bootstrap-openvr.ps1') -SourceRoot $OpenVrRoot
 if ($LASTEXITCODE -ne 0) {
@@ -88,8 +97,10 @@ $ConfigureArguments = @(
     '-DANYGEAR_BUILD_TESTS=ON',
     '-DANYGEAR_BUILD_WEBCAM=ON',
     '-DANYGEAR_BUILD_STEAMVR=ON',
+    '-DANYGEAR_BUILD_D4XX=ON',
     "-DANYGEAR_KINECT_SDK_ROOT=$KinectSdkRoot",
-    "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot"
+    "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot",
+    "-DANYGEAR_LIBREALSENSE_INCLUDE_DIR=$LibrealsenseIncludeDir"
 )
 
 Write-Host "[CONFIGURE] GCC $CompilerVersion, $Configuration"
@@ -109,13 +120,15 @@ $ExpectedOutputs = @(
     (Join-Path $BinOutput 'dance_around_anygear_kinect.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_webcam.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_steamvr.dll'),
+    (Join-Path $BinOutput 'dance_around_anygear_d4xx.dll'),
     (Join-Path $BinOutput 'anygear_loader_smoke.exe'),
     (Join-Path $BinOutput 'anygear_vp4u_harness.exe'),
     (Join-Path $BinOutput 'anygear_kinect_probe.exe'),
     (Join-Path $BinOutput 'anygear_webcam_probe.exe'),
     (Join-Path $BinOutput 'anygear_mediapipe_probe.exe'),
     (Join-Path $BinOutput 'anygear_steamvr_pose_test.exe'),
-    (Join-Path $BinOutput 'anygear_steamvr_probe.exe')
+    (Join-Path $BinOutput 'anygear_steamvr_probe.exe'),
+    (Join-Path $BinOutput 'anygear_d4xx_probe.exe')
 )
 foreach ($output in $ExpectedOutputs) {
     if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
@@ -126,7 +139,8 @@ foreach ($output in $ExpectedOutputs) {
 $PluginDlls = @(
     (Join-Path $BinOutput 'dance_around_anygear_kinect.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_webcam.dll'),
-    (Join-Path $BinOutput 'dance_around_anygear_steamvr.dll')
+    (Join-Path $BinOutput 'dance_around_anygear_steamvr.dll'),
+    (Join-Path $BinOutput 'dance_around_anygear_d4xx.dll')
 )
 foreach ($PluginDll in $PluginDlls) {
     $PluginExports = (& $ObjdumpExe -p $PluginDll | Out-String)

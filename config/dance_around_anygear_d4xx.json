@@ -1,0 +1,22 @@
+{
+  "D4xxPlacement": {
+    "PrimaryDevice": 0,
+    "PrimarySerial": "",
+    "RequiredDevices": 2,
+    "InfraredIndex": 1,
+    "FaceToFace": true,
+    "AutoCenterZ": true,
+    "StageHipZ": 2.3,
+    "MirrorCenterX": 0.55,
+    "OffsetX": 0.0,
+    "OffsetY": 0.0,
+    "OffsetZ": 0.0,
+    "PitchDegrees": 0.0,
+    "YawDegrees": 0.0,
+    "RollDegrees": 0.0,
+    "Smoothing": 0.65,
+    "BodyHoldMs": 250,
+    "OutputFps": 30,
+    "PredictionMs": 20.0
+  }
+}

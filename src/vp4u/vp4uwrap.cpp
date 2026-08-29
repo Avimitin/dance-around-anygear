@@ -4,11 +4,14 @@
 #include "pose.h"
 #include "kinect.h"
 #include "steamvr.h"
+#include "d4xx.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +23,8 @@
 #include <vector>
 
 #include <windows.h>
+
+#include <nlohmann/json.hpp>
 
 namespace vp4u {
 
@@ -115,6 +120,26 @@ struct Config {
     float steamvr_stage_hip_y = 0.0f;
     float steamvr_stage_hip_z = 2.30f;
     std::string steamvr_runtime_dir;
+    int   d4xx_primary_device = 0;
+    std::string d4xx_primary_serial;
+    int   d4xx_required_devices = 2;
+    int   d4xx_infrared_index = 1;
+    float d4xx_depth_scale_m = 0.001f;
+    bool  d4xx_face_to_face = true;
+    bool  d4xx_auto_center_z = true;
+    float d4xx_stage_hip_z = 2.30f;
+    float d4xx_mirror_center_x = 0.55f;
+    float d4xx_offset_x = 0.0f;
+    float d4xx_offset_y = 0.0f;
+    float d4xx_offset_z = 0.0f;
+    float d4xx_pitch_degrees = 0.0f;
+    float d4xx_yaw_degrees = 0.0f;
+    float d4xx_roll_degrees = 0.0f;
+    float d4xx_smoothing = 0.65f;
+    int   d4xx_body_hold_ms = 250;
+    int   d4xx_output_fps = 30;
+    float d4xx_prediction_ms = 20.0f;
+    std::string d4xx_runtime_path;
     float hip_stage_x = 0.9f, hip_stage_y = 1.0f, hip_stage_z = 0.75f;
     float torso_len_m = 0.52f;
     float z_damping = 0.7f;
@@ -125,6 +150,7 @@ struct Config {
 
 static Config g_cfg;
 static std::string g_cfgPath;
+static std::string dll_dir_w();
 
 static void config_apply_environment() {
     const auto apply_int = [](const char *name, int min_value, int max_value, int *target) {
@@ -139,8 +165,35 @@ static void config_apply_environment() {
         }
         *target = (int)value;
     };
+    const auto apply_float = [](const char* name, float min_value,
+                                float max_value, float* target) {
+        const char* text = std::getenv(name);
+        if (!text || !*text) return;
+        char* end = nullptr;
+        const double value = std::strtod(text, &end);
+        if (end == text || *end != '\0' || !std::isfinite(value) ||
+            value < min_value || value > max_value) {
+            log("config: ignoring invalid %s='%s' (expected %.2f..%.2f)",
+                name, text, min_value, max_value);
+            return;
+        }
+        *target = static_cast<float>(value);
+    };
+    const auto apply_bool = [](const char* name, bool* target) {
+        const char* text = std::getenv(name);
+        if (!text || !*text) return;
+        if (std::strcmp(text, "1") == 0 || _stricmp(text, "true") == 0) {
+            *target = true;
+        } else if (std::strcmp(text, "0") == 0 ||
+                   _stricmp(text, "false") == 0) {
+            *target = false;
+        } else {
+            log("config: ignoring invalid %s='%s' (expected true/false)",
+                name, text);
+        }
+    };
 
-#if defined(ANYGEAR_BACKEND_WEBCAM)
+#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX)
     apply_int("VP4U_CAPTURE_FPS", 1, 30, &g_cfg.capture_fps);
 #else
     apply_int("VP4U_CAPTURE_FPS", 1, 60, &g_cfg.capture_fps);
@@ -148,113 +201,299 @@ static void config_apply_environment() {
     apply_int("VP4U_PREVIEW_FPS", 1, 30, &g_cfg.preview_fps);
     apply_int("VP4U_IMAGE_POOL_MAX", 4, 24, &g_cfg.image_pool_max);
     apply_int("VP4U_CAMERA_INDEX", 0, 31, &g_cfg.camera_index);
+    apply_int("VP4U_D4XX_PRIMARY_DEVICE", 0, 31,
+              &g_cfg.d4xx_primary_device);
+    apply_int("VP4U_D4XX_REQUIRED_DEVICES", 1, 8,
+              &g_cfg.d4xx_required_devices);
+    apply_int("VP4U_D4XX_INFRARED_INDEX", 1, 2,
+              &g_cfg.d4xx_infrared_index);
+    apply_int("VP4U_D4XX_BODY_HOLD_MS", 0, 2000,
+              &g_cfg.d4xx_body_hold_ms);
+    apply_int("VP4U_D4XX_OUTPUT_FPS", 15, 60,
+              &g_cfg.d4xx_output_fps);
+    apply_float("VP4U_D4XX_PREDICTION_MS", 0.0f, 100.0f,
+                &g_cfg.d4xx_prediction_ms);
+    apply_float("VP4U_D4XX_OFFSET_X", -5.0f, 5.0f,
+                &g_cfg.d4xx_offset_x);
+    apply_float("VP4U_D4XX_OFFSET_Y", -5.0f, 5.0f,
+                &g_cfg.d4xx_offset_y);
+    apply_float("VP4U_D4XX_OFFSET_Z", -5.0f, 5.0f,
+                &g_cfg.d4xx_offset_z);
+    apply_bool("VP4U_D4XX_AUTO_CENTER_Z", &g_cfg.d4xx_auto_center_z);
+    apply_float("VP4U_D4XX_STAGE_HIP_Z", 0.5f, 5.0f,
+                &g_cfg.d4xx_stage_hip_z);
+    apply_float("VP4U_D4XX_PITCH_DEGREES", -90.0f, 90.0f,
+                &g_cfg.d4xx_pitch_degrees);
+    apply_float("VP4U_D4XX_YAW_DEGREES", -180.0f, 180.0f,
+                &g_cfg.d4xx_yaw_degrees);
+    apply_float("VP4U_D4XX_ROLL_DEGREES", -180.0f, 180.0f,
+                &g_cfg.d4xx_roll_degrees);
 }
 
-// tolerant extraction: find "key" then parse the number/colon value after it
-static bool json_find_number(const std::string& js, const char* key, double* out) {
-    std::string pat = std::string("\"") + key + "\"";
-    size_t p = js.find(pat);
-    if (p == std::string::npos) return false;
-    p = js.find(':', p + pat.size());
-    if (p == std::string::npos) return false;
-    p++;
-    while (p < js.size() && (js[p] == ' ' || js[p] == '\t' || js[p] == '\r' || js[p] == '\n')) p++;
-    char* end = nullptr;
-    double v = std::strtod(js.c_str() + p, &end);
-    if (end == js.c_str() + p) return false;
-    *out = v;
-    return true;
+using Json = nlohmann::json;
+
+static void json_assign_integer(const Json& object, const char* key,
+                                int* target) {
+    const auto value = object.find(key);
+    if (value == object.end()) return;
+    if (!value->is_number_integer()) {
+        log("config: %s must be an integer; ignored", key);
+        return;
+    }
+    try {
+        *target = value->get<int>();
+    } catch (const std::exception& error) {
+        log("config: invalid %s: %s", key, error.what());
+    }
 }
 
-static bool json_find_string(const std::string& js, const char* key, std::string* out) {
-    std::string pat = std::string("\"") + key + "\"";
-    size_t p = js.find(pat);
-    if (p == std::string::npos) return false;
-    p = js.find(':', p + pat.size());
-    if (p == std::string::npos) return false;
-    p = js.find('"', p + 1);
-    if (p == std::string::npos) return false;
-    size_t e = js.find('"', p + 1);
-    if (e == std::string::npos) return false;
-    *out = js.substr(p + 1, e - p - 1);
-    return true;
+static void json_assign_number(const Json& object, const char* key,
+                               float* target) {
+    const auto value = object.find(key);
+    if (value == object.end()) return;
+    if (!value->is_number()) {
+        log("config: %s must be a number; ignored", key);
+        return;
+    }
+    try {
+        *target = value->get<float>();
+    } catch (const std::exception& error) {
+        log("config: invalid %s: %s", key, error.what());
+    }
+}
+
+static void json_assign_boolean(const Json& object, const char* key,
+                                bool* target) {
+    const auto value = object.find(key);
+    if (value == object.end()) return;
+    if (value->is_boolean()) {
+        *target = value->get<bool>();
+        return;
+    }
+    // Continue accepting the old Vp4uWrap convention for compatibility.
+    if (value->is_number_integer()) {
+        *target = value->get<int>() != 0;
+        return;
+    }
+    log("config: %s must be a boolean; ignored", key);
+}
+
+static void json_assign_string(const Json& object, const char* key,
+                               std::string* target) {
+    const auto value = object.find(key);
+    if (value == object.end()) return;
+    if (!value->is_string()) {
+        log("config: %s must be a string; ignored", key);
+        return;
+    }
+    *target = value->get<std::string>();
+}
+
+#if defined(ANYGEAR_BACKEND_D4XX)
+static void config_apply_d4xx_placement(const Json& section) {
+    json_assign_integer(section, "PrimaryDevice", &g_cfg.d4xx_primary_device);
+    json_assign_string(section, "PrimarySerial", &g_cfg.d4xx_primary_serial);
+    json_assign_integer(section, "RequiredDevices", &g_cfg.d4xx_required_devices);
+    json_assign_integer(section, "InfraredIndex", &g_cfg.d4xx_infrared_index);
+    json_assign_boolean(section, "FaceToFace", &g_cfg.d4xx_face_to_face);
+    json_assign_boolean(section, "AutoCenterZ", &g_cfg.d4xx_auto_center_z);
+    json_assign_number(section, "StageHipZ", &g_cfg.d4xx_stage_hip_z);
+    json_assign_number(section, "MirrorCenterX", &g_cfg.d4xx_mirror_center_x);
+    json_assign_number(section, "OffsetX", &g_cfg.d4xx_offset_x);
+    json_assign_number(section, "OffsetY", &g_cfg.d4xx_offset_y);
+    json_assign_number(section, "OffsetZ", &g_cfg.d4xx_offset_z);
+    json_assign_number(section, "PitchDegrees", &g_cfg.d4xx_pitch_degrees);
+    json_assign_number(section, "YawDegrees", &g_cfg.d4xx_yaw_degrees);
+    json_assign_number(section, "RollDegrees", &g_cfg.d4xx_roll_degrees);
+    json_assign_number(section, "Smoothing", &g_cfg.d4xx_smoothing);
+    json_assign_integer(section, "BodyHoldMs", &g_cfg.d4xx_body_hold_ms);
+    json_assign_integer(section, "OutputFps", &g_cfg.d4xx_output_fps);
+    json_assign_number(section, "PredictionMs", &g_cfg.d4xx_prediction_ms);
+}
+#endif
+
+static bool read_config_text(const std::string& path, std::string* output) {
+    if (!output) return false;
+    FILE* file = std::fopen(path.c_str(), "rb");
+    if (!file) return false;
+    std::fseek(file, 0, SEEK_END);
+    const long length = std::ftell(file);
+    std::fseek(file, 0, SEEK_SET);
+    output->clear();
+    if (length > 0 && length < 1024 * 1024) {
+        output->resize(static_cast<std::size_t>(length));
+        const std::size_t read = std::fread(
+            output->data(), 1, static_cast<std::size_t>(length), file);
+        output->resize(read);
+    }
+    std::fclose(file);
+    return length >= 0 && length < 1024 * 1024;
+}
+
+static void config_apply_local_d4xx_file() {
+#if defined(ANYGEAR_BACKEND_D4XX)
+    const std::string path =
+        dll_dir_w() + "\\dance_around_anygear_d4xx.json";
+    std::string json;
+    if (!read_config_text(path, &json)) {
+        log("placement config: '%s' absent; using built-in defaults", path.c_str());
+        return;
+    }
+    const Json document = Json::parse(json, nullptr, false);
+    if (document.is_discarded()) {
+        log("placement config: '%s' is invalid JSON; ignored", path.c_str());
+        return;
+    }
+    const auto section = document.find("D4xxPlacement");
+    if (section == document.end() || !section->is_object()) {
+        log("placement config: '%s' requires a D4xxPlacement object; ignored",
+            path.c_str());
+        return;
+    }
+    config_apply_d4xx_placement(*section);
+    log("placement config: loaded '%s'", path.c_str());
+#endif
+}
+
+static std::string normalize_host_json(const std::string& input) {
+    // The cabinet configuration is JSON-like but contains trailing commas.
+    // Normalize only that known extension; nlohmann/json still performs all
+    // structural parsing, escaping, type checks, and error handling.
+    std::string output;
+    output.reserve(input.size());
+    bool in_string = false;
+    bool escaped = false;
+    for (std::size_t index = 0; index < input.size(); ++index) {
+        const char value = input[index];
+        if (in_string) {
+            output.push_back(value);
+            if (escaped) escaped = false;
+            else if (value == '\\') escaped = true;
+            else if (value == '"') in_string = false;
+            continue;
+        }
+        if (value == '"') {
+            in_string = true;
+            output.push_back(value);
+            continue;
+        }
+        if (value == ',') {
+            std::size_t next = index + 1;
+            while (next < input.size() && std::isspace(
+                       static_cast<unsigned char>(input[next]))) {
+                ++next;
+            }
+            if (next < input.size() &&
+                (input[next] == '}' || input[next] == ']')) {
+                continue;
+            }
+        }
+        output.push_back(value);
+    }
+    return output;
 }
 
 static void config_apply_json(const std::string& js) {
-    double v;
-    if (json_find_number(js, "CaptureWidth", &v)) g_cfg.capture_w = (int)v;
-    if (json_find_number(js, "CaptureHeight", &v)) g_cfg.capture_h = (int)v;
-    if (json_find_number(js, "CaptureFrameRate", &v)) g_cfg.capture_fps = (int)v;
-    // custom keys must live inside our own "Vp4uWrap" section so that e.g.
-    // VisionPoseConfig.ModelPath of the real config is not picked up.
-    std::string pat = "\"Vp4uWrap\"";
-    size_t sec = js.find(pat);
-    if (sec == std::string::npos) return;
-    std::string sub = js.substr(sec + pat.size());
-    if (json_find_number(sub, "CameraIndex", &v)) g_cfg.camera_index = (int)v;
-    if (json_find_number(sub, "PreviewFps", &v)) g_cfg.preview_fps = (int)v;
-    if (json_find_number(sub, "ImagePoolMax", &v)) g_cfg.image_pool_max = (int)v;
-    if (json_find_number(sub, "HipStageX", &v)) g_cfg.hip_stage_x = (float)v;
-    if (json_find_number(sub, "HipStageY", &v)) g_cfg.hip_stage_y = (float)v;
-    if (json_find_number(sub, "HipStageZ", &v)) g_cfg.hip_stage_z = (float)v;
-    if (json_find_number(sub, "TorsoLenM", &v)) g_cfg.torso_len_m = (float)v;
-    if (json_find_number(sub, "ZDamping", &v)) g_cfg.z_damping = (float)v;
-    if (json_find_number(sub, "EmaAlpha", &v)) g_cfg.ema_alpha = (float)v;
-    if (json_find_number(sub, "KinectFlipX", &v)) g_cfg.kinect_flip_x = (v != 0);
-    if (json_find_number(sub, "KinectFaceToFace", &v)) g_cfg.kinect_face_to_face = (v != 0);
-    if (json_find_number(sub, "KinectMirrorCenterX", &v)) g_cfg.kinect_mirror_center_x = (float)v;
-    if (json_find_number(sub, "KinectUseColor", &v)) g_cfg.kinect_use_color = (v != 0);
-    if (json_find_number(sub, "KinectPoseImages", &v)) g_cfg.kinect_pose_images = (v != 0);
-    if (json_find_number(sub, "KinectOffsetX", &v)) g_cfg.kinect_offset_x = (float)v;
-    if (json_find_number(sub, "KinectOffsetY", &v)) g_cfg.kinect_offset_y = (float)v;
-    if (json_find_number(sub, "KinectOffsetZ", &v)) g_cfg.kinect_offset_z = (float)v;
-    if (json_find_number(sub, "KinectSmoothing", &v)) g_cfg.kinect_smoothing = (float)v;
-    if (json_find_number(sub, "KinectCorrection", &v)) g_cfg.kinect_correction = (float)v;
-    if (json_find_number(sub, "KinectPrediction", &v)) g_cfg.kinect_prediction = (float)v;
-    if (json_find_number(sub, "KinectJitterRadius", &v)) g_cfg.kinect_jitter_radius = (float)v;
-    if (json_find_number(sub, "KinectMaxDeviationRadius", &v)) g_cfg.kinect_max_deviation_radius = (float)v;
-    if (json_find_number(sub, "KinectSkeletonLockMs", &v)) g_cfg.kinect_skeleton_lock_ms = (int)v;
-    if (json_find_number(sub, "KinectBodyHoldMs", &v)) g_cfg.kinect_body_hold_ms = (int)v;
-    if (json_find_number(sub, "KinectMaxJointSpeedMps", &v)) g_cfg.kinect_max_joint_speed_mps = (float)v;
-    if (json_find_number(sub, "KinectBoneLengthTolerance", &v)) g_cfg.kinect_bone_length_tolerance = (float)v;
-    if (json_find_number(sub, "SteamVrAutoCenter", &v)) g_cfg.steamvr_auto_center = (v != 0);
-    if (json_find_number(sub, "SteamVrFaceToFace", &v)) g_cfg.steamvr_face_to_face = (v != 0);
-    if (json_find_number(sub, "SteamVrRequireWaist", &v)) g_cfg.steamvr_require_waist = (v != 0);
-    if (json_find_number(sub, "SteamVrRequireFeet", &v)) g_cfg.steamvr_require_feet = (v != 0);
-    if (json_find_number(sub, "SteamVrBodyHoldMs", &v)) g_cfg.steamvr_body_hold_ms = (int)v;
-    if (json_find_number(sub, "SteamVrStageHipX", &v)) g_cfg.steamvr_stage_hip_x = (float)v;
-    if (json_find_number(sub, "SteamVrStageHipY", &v)) g_cfg.steamvr_stage_hip_y = (float)v;
-    if (json_find_number(sub, "SteamVrStageHipZ", &v)) g_cfg.steamvr_stage_hip_z = (float)v;
-    std::string s;
-    if (json_find_string(sub, "ModelPath", &s)) g_cfg.model_path = s;
-    if (json_find_string(sub, "RuntimeDir", &s)) g_cfg.runtime_dir = s;
-    if (json_find_string(sub, "SteamVrRuntimeDir", &s)) g_cfg.steamvr_runtime_dir = s;
-    if (json_find_number(sub, "MirrorX", &v)) g_cfg.mirror_x = (v != 0);
+    const Json document = Json::parse(
+        normalize_host_json(js), nullptr, false, true);
+    if (document.is_discarded() || !document.is_object()) {
+        log("LoadConfig: host configuration is invalid JSON; ignored");
+        return;
+    }
+    json_assign_integer(document, "CaptureWidth", &g_cfg.capture_w);
+    json_assign_integer(document, "CaptureHeight", &g_cfg.capture_h);
+    json_assign_integer(document, "CaptureFrameRate", &g_cfg.capture_fps);
+    const auto real_sense = document.find("RealSenseInputSettings");
+    if (real_sense != document.end() && real_sense->is_object()) {
+        const auto camera = real_sense->find("CameraConfig");
+        if (camera != real_sense->end() && camera->is_object()) {
+            json_assign_integer(*camera, "CaptureWidth", &g_cfg.capture_w);
+            json_assign_integer(*camera, "CaptureHeight", &g_cfg.capture_h);
+            json_assign_integer(*camera, "CaptureFrameRate", &g_cfg.capture_fps);
+        }
+    }
+
+    // Project-specific keys are scoped so vendor fields with the same name
+    // cannot be consumed accidentally.
+    const auto section = document.find("Vp4uWrap");
+    if (section == document.end() || !section->is_object()) return;
+    const Json& object = *section;
+    json_assign_integer(object, "CameraIndex", &g_cfg.camera_index);
+    json_assign_integer(object, "PreviewFps", &g_cfg.preview_fps);
+    json_assign_integer(object, "ImagePoolMax", &g_cfg.image_pool_max);
+    json_assign_number(object, "HipStageX", &g_cfg.hip_stage_x);
+    json_assign_number(object, "HipStageY", &g_cfg.hip_stage_y);
+    json_assign_number(object, "HipStageZ", &g_cfg.hip_stage_z);
+    json_assign_number(object, "TorsoLenM", &g_cfg.torso_len_m);
+    json_assign_number(object, "ZDamping", &g_cfg.z_damping);
+    json_assign_number(object, "EmaAlpha", &g_cfg.ema_alpha);
+    json_assign_boolean(object, "KinectFlipX", &g_cfg.kinect_flip_x);
+    json_assign_boolean(object, "KinectFaceToFace", &g_cfg.kinect_face_to_face);
+    json_assign_number(object, "KinectMirrorCenterX", &g_cfg.kinect_mirror_center_x);
+    json_assign_boolean(object, "KinectUseColor", &g_cfg.kinect_use_color);
+    json_assign_boolean(object, "KinectPoseImages", &g_cfg.kinect_pose_images);
+    json_assign_number(object, "KinectOffsetX", &g_cfg.kinect_offset_x);
+    json_assign_number(object, "KinectOffsetY", &g_cfg.kinect_offset_y);
+    json_assign_number(object, "KinectOffsetZ", &g_cfg.kinect_offset_z);
+    json_assign_number(object, "KinectSmoothing", &g_cfg.kinect_smoothing);
+    json_assign_number(object, "KinectCorrection", &g_cfg.kinect_correction);
+    json_assign_number(object, "KinectPrediction", &g_cfg.kinect_prediction);
+    json_assign_number(object, "KinectJitterRadius", &g_cfg.kinect_jitter_radius);
+    json_assign_number(object, "KinectMaxDeviationRadius", &g_cfg.kinect_max_deviation_radius);
+    json_assign_integer(object, "KinectSkeletonLockMs", &g_cfg.kinect_skeleton_lock_ms);
+    json_assign_integer(object, "KinectBodyHoldMs", &g_cfg.kinect_body_hold_ms);
+    json_assign_number(object, "KinectMaxJointSpeedMps", &g_cfg.kinect_max_joint_speed_mps);
+    json_assign_number(object, "KinectBoneLengthTolerance", &g_cfg.kinect_bone_length_tolerance);
+    json_assign_boolean(object, "SteamVrAutoCenter", &g_cfg.steamvr_auto_center);
+    json_assign_boolean(object, "SteamVrFaceToFace", &g_cfg.steamvr_face_to_face);
+    json_assign_boolean(object, "SteamVrRequireWaist", &g_cfg.steamvr_require_waist);
+    json_assign_boolean(object, "SteamVrRequireFeet", &g_cfg.steamvr_require_feet);
+    json_assign_integer(object, "SteamVrBodyHoldMs", &g_cfg.steamvr_body_hold_ms);
+    json_assign_number(object, "SteamVrStageHipX", &g_cfg.steamvr_stage_hip_x);
+    json_assign_number(object, "SteamVrStageHipY", &g_cfg.steamvr_stage_hip_y);
+    json_assign_number(object, "SteamVrStageHipZ", &g_cfg.steamvr_stage_hip_z);
+    json_assign_integer(object, "D4xxPrimaryDevice", &g_cfg.d4xx_primary_device);
+    json_assign_string(object, "D4xxPrimarySerial", &g_cfg.d4xx_primary_serial);
+    json_assign_integer(object, "D4xxRequiredDevices", &g_cfg.d4xx_required_devices);
+    json_assign_integer(object, "D4xxInfraredIndex", &g_cfg.d4xx_infrared_index);
+    json_assign_number(object, "D4xxDepthScaleM", &g_cfg.d4xx_depth_scale_m);
+    json_assign_boolean(object, "D4xxFaceToFace", &g_cfg.d4xx_face_to_face);
+    json_assign_boolean(object, "D4xxAutoCenterZ", &g_cfg.d4xx_auto_center_z);
+    json_assign_number(object, "D4xxStageHipZ", &g_cfg.d4xx_stage_hip_z);
+    json_assign_number(object, "D4xxMirrorCenterX", &g_cfg.d4xx_mirror_center_x);
+    json_assign_number(object, "D4xxOffsetX", &g_cfg.d4xx_offset_x);
+    json_assign_number(object, "D4xxOffsetY", &g_cfg.d4xx_offset_y);
+    json_assign_number(object, "D4xxOffsetZ", &g_cfg.d4xx_offset_z);
+    json_assign_number(object, "D4xxPitchDegrees", &g_cfg.d4xx_pitch_degrees);
+    json_assign_number(object, "D4xxYawDegrees", &g_cfg.d4xx_yaw_degrees);
+    json_assign_number(object, "D4xxRollDegrees", &g_cfg.d4xx_roll_degrees);
+    json_assign_number(object, "D4xxSmoothing", &g_cfg.d4xx_smoothing);
+    json_assign_integer(object, "D4xxBodyHoldMs", &g_cfg.d4xx_body_hold_ms);
+    json_assign_integer(object, "D4xxOutputFps", &g_cfg.d4xx_output_fps);
+    json_assign_number(object, "D4xxPredictionMs", &g_cfg.d4xx_prediction_ms);
+    json_assign_string(object, "ModelPath", &g_cfg.model_path);
+    json_assign_string(object, "RuntimeDir", &g_cfg.runtime_dir);
+    json_assign_string(object, "SteamVrRuntimeDir", &g_cfg.steamvr_runtime_dir);
+    json_assign_string(object, "D4xxRuntimePath", &g_cfg.d4xx_runtime_path);
+    json_assign_boolean(object, "MirrorX", &g_cfg.mirror_x);
 }
 
 static void config_load_file(const char* path) {
-    if (!path || !*path) {
-        config_apply_environment();
-        log("LoadConfig: empty path, using defaults/environment");
-        return;
-    }
-    g_cfgPath = path;
-    FILE* f = std::fopen(path, "rb");
-    if (!f) {
-        config_apply_environment();
-        log("LoadConfig: cannot open '%s', using defaults/environment", path);
-        return;
-    }
-    std::fseek(f, 0, SEEK_END);
-    long n = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
     std::string js;
-    if (n > 0 && n < 16 * 1024 * 1024) {
-        js.resize((size_t)n);
-        std::fread(&js[0], 1, (size_t)n, f);
+    if (path && *path) {
+        g_cfgPath = path;
+        if (read_config_text(path, &js)) {
+            config_apply_json(js);
+        } else {
+            log("LoadConfig: cannot open '%s', using backend defaults", path);
+        }
+    } else {
+        log("LoadConfig: empty host path, using backend defaults");
     }
-    std::fclose(f);
-    config_apply_json(js);
+    // The plugin-local placement profile intentionally wins over the game's
+    // vendor configuration. This keeps machine-specific sensor placement out
+    // of original game files and out of launch scripts.
+    config_apply_local_d4xx_file();
 #if defined(ANYGEAR_BACKEND_KINECT)
     // Release-safe Kinect pacing belongs to the backend target, not to a user
     // launch script or the vendor JSON. Maintainers can still override these
@@ -264,19 +503,49 @@ static void config_load_file(const char* path) {
     g_cfg.image_pool_max = 12;
 #endif
     config_apply_environment();
-#if defined(ANYGEAR_BACKEND_WEBCAM)
+#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX)
     g_cfg.capture_fps = std::clamp(g_cfg.capture_fps, 1, 30);
 #else
     g_cfg.capture_fps = std::clamp(g_cfg.capture_fps, 1, 60);
 #endif
     g_cfg.preview_fps = std::clamp(g_cfg.preview_fps, 1, 30);
     g_cfg.image_pool_max = std::clamp(g_cfg.image_pool_max, 4, 24);
-#if defined(ANYGEAR_BACKEND_WEBCAM)
+#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX)
     // The vendor JSON may request the native D435 image size. Monocular pose
     // does not benefit from submitting more than the validated webcam frame,
     // so keep inference/callback allocations bounded inside the DLL.
     g_cfg.capture_w = std::clamp(g_cfg.capture_w, 160, 848);
     g_cfg.capture_h = std::clamp(g_cfg.capture_h, 120, 480);
+#endif
+#if defined(ANYGEAR_BACKEND_D4XX)
+    // This is the native D430 profile validated by the standalone probe. Keep
+    // the two physical streams and MediaPipe input on one fixed pixel grid.
+    g_cfg.capture_w = 848;
+    g_cfg.capture_h = 480;
+    g_cfg.d4xx_primary_device = std::clamp(
+        g_cfg.d4xx_primary_device, 0, 31);
+    g_cfg.d4xx_required_devices = std::clamp(
+        g_cfg.d4xx_required_devices, 1, 8);
+    g_cfg.d4xx_infrared_index = std::clamp(
+        g_cfg.d4xx_infrared_index, 1, 2);
+    g_cfg.d4xx_depth_scale_m = std::clamp(
+        g_cfg.d4xx_depth_scale_m, 0.000001f, 0.1f);
+    g_cfg.d4xx_offset_x = std::clamp(g_cfg.d4xx_offset_x, -5.0f, 5.0f);
+    g_cfg.d4xx_offset_y = std::clamp(g_cfg.d4xx_offset_y, -5.0f, 5.0f);
+    g_cfg.d4xx_offset_z = std::clamp(g_cfg.d4xx_offset_z, -5.0f, 5.0f);
+    g_cfg.d4xx_stage_hip_z = std::clamp(
+        g_cfg.d4xx_stage_hip_z, 0.5f, 5.0f);
+    g_cfg.d4xx_pitch_degrees = std::clamp(
+        g_cfg.d4xx_pitch_degrees, -90.0f, 90.0f);
+    g_cfg.d4xx_yaw_degrees = std::clamp(
+        g_cfg.d4xx_yaw_degrees, -180.0f, 180.0f);
+    g_cfg.d4xx_roll_degrees = std::clamp(
+        g_cfg.d4xx_roll_degrees, -180.0f, 180.0f);
+    g_cfg.d4xx_smoothing = std::clamp(g_cfg.d4xx_smoothing, 0.0f, 1.0f);
+    g_cfg.d4xx_body_hold_ms = std::clamp(g_cfg.d4xx_body_hold_ms, 0, 2000);
+    g_cfg.d4xx_output_fps = std::clamp(g_cfg.d4xx_output_fps, 15, 60);
+    g_cfg.d4xx_prediction_ms = std::clamp(
+        g_cfg.d4xx_prediction_ms, 0.0f, 100.0f);
 #endif
     g_cfg.kinect_smoothing = std::clamp(g_cfg.kinect_smoothing, 0.0f, 1.0f);
     g_cfg.kinect_correction = std::clamp(g_cfg.kinect_correction, 0.0f, 1.0f);
@@ -305,6 +574,24 @@ static void config_load_file(const char* path) {
         g_cfg.capture_fps, g_cfg.preview_fps, g_cfg.image_pool_max,
         (int)g_cfg.steamvr_require_waist, (int)g_cfg.steamvr_require_feet,
         (int)g_cfg.steamvr_face_to_face, sizeof(ParsedBody));
+#elif defined(ANYGEAR_BACKEND_D4XX)
+    log("runtime config: D4xx depth+IR profile %d Hz, preview %d Hz, "
+        "pool %d, primary=%d, required=%d, IR-index=%d, frame=%dx%d, "
+        "face-to-face=%d, auto-center-z=%d@%.2fm, "
+        "offset=(%.2f,%.2f,%.2f), rotation=(%.1f,%.1f,%.1f)deg, "
+        "smooth=%.2f, hold=%dms, output=%dHz, prediction=%.0fms, "
+        "ParsedBody=%zu bytes",
+        g_cfg.capture_fps, g_cfg.preview_fps, g_cfg.image_pool_max,
+        g_cfg.d4xx_primary_device, g_cfg.d4xx_required_devices,
+        g_cfg.d4xx_infrared_index, g_cfg.capture_w, g_cfg.capture_h,
+        (int)g_cfg.d4xx_face_to_face, (int)g_cfg.d4xx_auto_center_z,
+        g_cfg.d4xx_stage_hip_z, g_cfg.d4xx_offset_x,
+        g_cfg.d4xx_offset_y, g_cfg.d4xx_offset_z,
+        g_cfg.d4xx_pitch_degrees, g_cfg.d4xx_yaw_degrees,
+        g_cfg.d4xx_roll_degrees,
+        g_cfg.d4xx_smoothing, g_cfg.d4xx_body_hold_ms,
+        g_cfg.d4xx_output_fps, g_cfg.d4xx_prediction_ms,
+        sizeof(ParsedBody));
 #else
     log("runtime config: MediaPipe webcam profile %d Hz, preview %d Hz, "
         "pool %d, camera=%d, frame=%dx%d, ParsedBody=%zu bytes",
@@ -439,7 +726,7 @@ static std::atomic<bool> g_poseOk{false};
 // ------------------------------------------------------------ backend ----
 // Release targets select one sensor at compile time. An explicitly selected
 // backend never falls through to another physical device on failure.
-enum class Backend { Webcam, Kinect, SteamVr };
+enum class Backend { Webcam, Kinect, SteamVr, D4xx };
 
 static Backend backend_from_env() {
 #if defined(ANYGEAR_BACKEND_KINECT)
@@ -448,6 +735,8 @@ static Backend backend_from_env() {
     return Backend::Webcam;
 #elif defined(ANYGEAR_BACKEND_STEAMVR)
     return Backend::SteamVr;
+#elif defined(ANYGEAR_BACKEND_D4XX)
+    return Backend::D4xx;
 #else
     const char* e = std::getenv("VP4U_BACKEND");
     if (!e) return Backend::Webcam;
@@ -455,6 +744,7 @@ static Backend backend_from_env() {
     for (char& c : v) c = (char)std::tolower((unsigned char)c);
     if (v == "kinect") return Backend::Kinect;
     if (v == "steamvr") return Backend::SteamVr;
+    if (v == "d4xx") return Backend::D4xx;
     return Backend::Webcam;
 #endif
 }
@@ -467,6 +757,7 @@ static Backend backend() {
 // Non-null while the corresponding hardware-skeleton backend is running.
 static std::shared_ptr<KinectSource> g_kinect;
 static std::shared_ptr<SteamVrSource> g_steamvr;
+static std::shared_ptr<D4xxSource> g_d4xx;
 
 static bool hardware_skeleton_active() {
     return g_kinect != nullptr || g_steamvr != nullptr;
@@ -499,16 +790,19 @@ static int hardware_body_hold_ms() {
 static int src_native_width() {
     if (g_kinect) return g_kinect->native_width();
     if (g_steamvr) return g_steamvr->native_width();
+    if (g_d4xx) return g_d4xx->native_width();
     return g_cam ? g_cam->native_width() : 0;
 }
 static int src_native_height() {
     if (g_kinect) return g_kinect->native_height();
     if (g_steamvr) return g_steamvr->native_height();
+    if (g_d4xx) return g_d4xx->native_height();
     return g_cam ? g_cam->native_height() : 0;
 }
 static void src_get_frame(std::vector<uint8_t>& out, int w, int h) {
     if (g_kinect) g_kinect->get_frame_bgr8(out, w, h);
     else if (g_steamvr) g_steamvr->get_frame_bgr8(out, w, h);
+    else if (g_d4xx) g_d4xx->get_frame_bgr8(out, w, h);
     else if (g_cam) g_cam->get_frame_bgr8(out, w, h);
 }
 
@@ -557,14 +851,23 @@ static std::string dll_dir_w() {
 
 static void paths_default(std::wstring* runtime_dir, std::string* model_path) {
     std::string dir = dll_dir_w();
-    const std::string dependency_dir =
-        dir + "\\dance_around_anygear_webcam";
+    const std::string dependency_dir = dir +
+        (backend() == Backend::D4xx
+            ? "\\dance_around_anygear_d4xx"
+            : "\\dance_around_anygear_webcam");
     *runtime_dir = g_cfg.runtime_dir.empty()
         ? std::wstring(dependency_dir.begin(), dependency_dir.end())
         : std::wstring(g_cfg.runtime_dir.begin(), g_cfg.runtime_dir.end());
     *model_path = g_cfg.model_path.empty()
         ? dependency_dir + "\\pose_landmarker_lite.task"
         : g_cfg.model_path;
+}
+
+static std::wstring d4xx_runtime_default() {
+    const std::string path = g_cfg.d4xx_runtime_path.empty()
+        ? dll_dir_w() + "\\dance_around_anygear_d4xx\\realsense2.dll"
+        : g_cfg.d4xx_runtime_path;
+    return std::wstring(path.begin(), path.end());
 }
 
 static std::wstring steamvr_runtime_default() {
@@ -598,6 +901,33 @@ static void map_pose_to_body(const PoseResult& pr, ParsedBody& body) {
             (pr.world[a][1] + pr.world[b][1]) * 0.5f,
             (pr.world[a][2] + pr.world[b][2]) * 0.5f,
             std::min(st_of(a), st_of(b)));
+    };
+    auto set_blend2 = [&](int jt, int anchor, float anchor_weight,
+                          int distal, float distal_weight) {
+        set(jt,
+            pr.world[anchor][0] * anchor_weight +
+                pr.world[distal][0] * distal_weight,
+            pr.world[anchor][1] * anchor_weight +
+                pr.world[distal][1] * distal_weight,
+            pr.world[anchor][2] * anchor_weight +
+                pr.world[distal][2] * distal_weight,
+            std::min(st_of(anchor), st_of(distal)));
+    };
+    auto set_blend3 = [&](int jt, int anchor, float anchor_weight,
+                          int distal_a, float distal_a_weight,
+                          int distal_b, float distal_b_weight) {
+        set(jt,
+            pr.world[anchor][0] * anchor_weight +
+                pr.world[distal_a][0] * distal_a_weight +
+                pr.world[distal_b][0] * distal_b_weight,
+            pr.world[anchor][1] * anchor_weight +
+                pr.world[distal_a][1] * distal_a_weight +
+                pr.world[distal_b][1] * distal_b_weight,
+            pr.world[anchor][2] * anchor_weight +
+                pr.world[distal_a][2] * distal_a_weight +
+                pr.world[distal_b][2] * distal_b_weight,
+            std::min(st_of(anchor),
+                     std::max(st_of(distal_a), st_of(distal_b))));
     };
     // core chain
     set_mid(JT_SpineBase, MP_LeftHip, MP_RightHip);                    // 0
@@ -635,19 +965,32 @@ static void map_pose_to_body(const PoseResult& pr, ParsedBody& body) {
     set_mp(JT_ShoulderLeft, MP_LeftShoulder);
     set_mp(JT_ElbowLeft, MP_LeftElbow);
     set_mp(JT_WristLeft, MP_LeftWrist);
-    set_mp(JT_HandLeft, MP_LeftPinky);
+    // VP4U's Hand joint is a palm center, while MediaPipe's pinky/index
+    // landmarks sit on the hand edge and are unstable in a full-body frame.
+    // Keep the palm anchored to the reliable wrist and use both hand edges to
+    // retain direction without letting one occluded finger pull the hand onto
+    // another limb.
+    if (hardware_skeleton_active()) set_mp(JT_HandLeft, MP_LeftPinky);
+    else set_blend3(JT_HandLeft, MP_LeftWrist, 0.55f,
+                    MP_LeftPinky, 0.225f, MP_LeftIndex, 0.225f);
     set_mp(JT_ShoulderRight, MP_RightShoulder);
     set_mp(JT_ElbowRight, MP_RightElbow);
     set_mp(JT_WristRight, MP_RightWrist);
-    set_mp(JT_HandRight, MP_RightPinky);
+    if (hardware_skeleton_active()) set_mp(JT_HandRight, MP_RightPinky);
+    else set_blend3(JT_HandRight, MP_RightWrist, 0.55f,
+                    MP_RightPinky, 0.225f, MP_RightIndex, 0.225f);
     set_mp(JT_HipLeft, MP_LeftHip);
     set_mp(JT_KneeLeft, MP_LeftKnee);
     set_mp(JT_AnkleLeft, MP_LeftAnkle);
-    set_mp(JT_FootLeft, MP_LeftFootIndex);
+    if (hardware_skeleton_active()) set_mp(JT_FootLeft, MP_LeftFootIndex);
+    else set_blend3(JT_FootLeft, MP_LeftAnkle, 0.15f,
+                    MP_LeftHeel, 0.35f, MP_LeftFootIndex, 0.50f);
     set_mp(JT_HipRight, MP_RightHip);
     set_mp(JT_KneeRight, MP_RightKnee);
     set_mp(JT_AnkleRight, MP_RightAnkle);
-    set_mp(JT_FootRight, MP_RightFootIndex);
+    if (hardware_skeleton_active()) set_mp(JT_FootRight, MP_RightFootIndex);
+    else set_blend3(JT_FootRight, MP_RightAnkle, 0.15f,
+                    MP_RightHeel, 0.35f, MP_RightFootIndex, 0.50f);
     // SpineShoulder = slightly below neck (toward spine-mid)
     {
         const Joint& neck = body.JointData[JT_Neck];
@@ -658,10 +1001,21 @@ static void map_pose_to_body(const PoseResult& pr, ParsedBody& body) {
             neck.PositionZ * 0.75f + sm.PositionZ * 0.25f,
             std::min(neck.TrackingState, sm.TrackingState));
     }
-    set_mp(JT_HandTipLeft, MP_LeftIndex);
-    set_mp(JT_ThumbLeft, MP_LeftThumb);
-    set_mp(JT_HandTipRight, MP_RightIndex);
-    set_mp(JT_ThumbRight, MP_RightThumb);
+    if (hardware_skeleton_active()) {
+        set_mp(JT_HandTipLeft, MP_LeftIndex);
+        set_mp(JT_ThumbLeft, MP_LeftThumb);
+        set_mp(JT_HandTipRight, MP_RightIndex);
+        set_mp(JT_ThumbRight, MP_RightThumb);
+    } else {
+        set_blend2(JT_HandTipLeft, MP_LeftWrist, 0.20f,
+                   MP_LeftIndex, 0.80f);
+        set_blend2(JT_ThumbLeft, MP_LeftWrist, 0.20f,
+                   MP_LeftThumb, 0.80f);
+        set_blend2(JT_HandTipRight, MP_RightWrist, 0.20f,
+                   MP_RightIndex, 0.80f);
+        set_blend2(JT_ThumbRight, MP_RightWrist, 0.20f,
+                   MP_RightThumb, 0.80f);
+    }
     set_mp(JT_EyeLeft, MP_LeftEye);
     set_mp(JT_EyeRight, MP_RightEye);
     set_mp(JT_EarLeft, MP_LeftEar);
@@ -753,13 +1107,237 @@ static void transform_kinect_pose_to_stage(PoseResult& pose) {
     }
 }
 
+struct D4xxInferenceState {
+    std::mutex mutex;
+    ParsedBody previous{};
+    ParsedBody latest{};
+    bool have_previous = false;
+    bool have_latest = false;
+    bool last_attempt_valid = false;
+    uint64_t previous_sample_ms = 0;
+    uint64_t latest_sample_ms = 0;
+    uint64_t last_valid_ms = 0;
+    uint64_t attempts = 0;
+    uint64_t detections = 0;
+};
+
+static float d4xx_prediction_speed_limit(int joint) {
+    switch (joint) {
+    case JT_ElbowLeft:
+    case JT_WristLeft:
+    case JT_HandLeft:
+    case JT_ElbowRight:
+    case JT_WristRight:
+    case JT_HandRight:
+    case JT_KneeLeft:
+    case JT_AnkleLeft:
+    case JT_FootLeft:
+    case JT_KneeRight:
+    case JT_AnkleRight:
+    case JT_FootRight:
+    case JT_HandTipLeft:
+    case JT_ThumbLeft:
+    case JT_HandTipRight:
+    case JT_ThumbRight:
+        return 8.0f;
+    default:
+        return 4.0f;
+    }
+}
+
+static void predict_d4xx_body(ParsedBody* output,
+                              const ParsedBody& previous,
+                              const ParsedBody& latest,
+                              uint64_t previous_sample_ms,
+                              uint64_t latest_sample_ms,
+                              uint64_t now_ms) {
+    *output = latest;
+    if (latest_sample_ms <= previous_sample_ms) return;
+    const float sample_seconds = static_cast<float>(
+        latest_sample_ms - previous_sample_ms) / 1000.0f;
+    if (sample_seconds < 0.015f || sample_seconds > 0.250f) return;
+
+    // Account for capture + inference age and look a small configurable amount
+    // ahead. A hard 100 ms ceiling prevents a missed inference from launching
+    // an extremity across the stage.
+    const float horizon_seconds = std::min(
+        0.100f,
+        (static_cast<float>(now_ms - latest_sample_ms) +
+         g_cfg.d4xx_prediction_ms) / 1000.0f);
+    for (int joint = 0; joint < kJointCount; ++joint) {
+        const Joint& old_joint = previous.JointData[joint];
+        const Joint& new_joint = latest.JointData[joint];
+        Joint& predicted = output->JointData[joint];
+        if (old_joint.TrackingState == 0 || new_joint.TrackingState == 0) {
+            continue;
+        }
+        float velocity[3] = {
+            (new_joint.PositionX - old_joint.PositionX) / sample_seconds,
+            (new_joint.PositionY - old_joint.PositionY) / sample_seconds,
+            (new_joint.PositionZ - old_joint.PositionZ) / sample_seconds,
+        };
+        const float magnitude = std::sqrt(
+            velocity[0] * velocity[0] + velocity[1] * velocity[1] +
+            velocity[2] * velocity[2]);
+        const float limit = d4xx_prediction_speed_limit(joint);
+        if (magnitude > limit && magnitude > 0.0f) {
+            const float scale = limit / magnitude;
+            velocity[0] *= scale;
+            velocity[1] *= scale;
+            velocity[2] *= scale;
+        }
+        predicted.PositionX += velocity[0] * horizon_seconds;
+        predicted.PositionY += velocity[1] * horizon_seconds;
+        predicted.PositionZ += velocity[2] * horizon_seconds;
+    }
+}
+
+static void d4xx_analysis_loop(OnPoseFrameCallback cb, void* ctx) {
+    D4xxInferenceState state;
+    std::thread inference([&state] {
+        std::vector<uint8_t> frame;
+        auto next_tick = std::chrono::steady_clock::now();
+        while (!g_analysisWk.stop) {
+            const uint64_t sample_ms = GetTickCount64();
+            ParsedBody detected_body;
+            make_empty_body(detected_body, 0);
+            bool detected = false;
+            const int width = g_cfg.capture_w;
+            const int height = g_cfg.capture_h;
+            if (g_poseOk && g_d4xx &&
+                g_d4xx->get_pose_frame_bgr8(frame, width, height) &&
+                !frame.empty()) {
+                PoseResult pose;
+                if (g_pose.infer(frame.data(), width, height, &pose) &&
+                    pose.valid && g_d4xx->apply_depth_to_pose(&pose)) {
+                    map_pose_to_body(pose, detected_body);
+                    detected = true;
+                }
+            }
+            const uint64_t completion_ms = GetTickCount64();
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                ++state.attempts;
+                state.last_attempt_valid = detected;
+                if (detected) {
+                    if (state.have_latest) {
+                        state.previous = state.latest;
+                        state.previous_sample_ms = state.latest_sample_ms;
+                        state.have_previous = true;
+                    }
+                    state.latest = detected_body;
+                    state.latest_sample_ms = sample_ms;
+                    state.last_valid_ms = completion_ms;
+                    state.have_latest = true;
+                    ++state.detections;
+                }
+            }
+            next_tick += std::chrono::microseconds(
+                1000000 / std::max(1, g_cfg.capture_fps));
+            const auto now = std::chrono::steady_clock::now();
+            if (next_tick < now) next_tick = now;
+            sleep_worker_until(g_analysisWk, next_tick);
+        }
+    });
+
+    ParsedBody body;
+    make_empty_body(body, 0);
+    bool was_tracked = false;
+    uint64_t output_frames = 0;
+    uint64_t last_attempts = 0;
+    uint64_t last_detections = 0;
+    uint64_t telemetry_outputs = 0;
+    auto telemetry_tick = std::chrono::steady_clock::now();
+    auto next_tick = telemetry_tick;
+    static const uint8_t black_pixel[3] = {0, 0, 0};
+    while (!g_analysisWk.stop) {
+        const uint64_t now_ms = GetTickCount64();
+        bool have_body = false;
+        bool latest_attempt_valid = false;
+        uint64_t attempts = 0;
+        uint64_t detections = 0;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            attempts = state.attempts;
+            detections = state.detections;
+            latest_attempt_valid = state.last_attempt_valid;
+            have_body = state.have_latest && state.last_valid_ms != 0 &&
+                now_ms - state.last_valid_ms <=
+                    static_cast<uint64_t>(g_cfg.d4xx_body_hold_ms);
+            if (have_body) {
+                if (state.have_previous) {
+                    predict_d4xx_body(
+                        &body, state.previous, state.latest,
+                        state.previous_sample_ms, state.latest_sample_ms,
+                        now_ms);
+                } else {
+                    body = state.latest;
+                }
+                if (!latest_attempt_valid &&
+                    now_ms - state.last_valid_ms > 100) {
+                    body.TrackingState = 1;
+                    for (int joint = 0; joint < kJointCount; ++joint) {
+                        if (body.JointData[joint].TrackingState != 0) {
+                            body.JointData[joint].TrackingState = 1;
+                        }
+                    }
+                }
+            }
+        }
+        if (!have_body) make_empty_body(body, 0);
+        if (have_body != was_tracked) {
+            log("analysis: D4xx IR/MediaPipe body -> %s",
+                have_body ? "TRACKED" : "NOT TRACKED");
+            was_tracked = have_body;
+        }
+
+        ImageDesc* main_image = make_reusable_image_desc(
+            0, black_pixel, 1, 1);
+        cb(ctx, qpc_now_us(), &body, 1,
+           nullptr, 0, nullptr, 0, nullptr, 0,
+           main_image, nullptr);
+        ++output_frames;
+        ++telemetry_outputs;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - telemetry_tick >= std::chrono::seconds(10)) {
+            const float seconds = std::chrono::duration<float>(
+                now - telemetry_tick).count();
+            log("analysis: D4xx cadence infer=%.1fHz tracked=%.1fHz "
+                "output=%.1fHz",
+                (attempts - last_attempts) / seconds,
+                (detections - last_detections) / seconds,
+                telemetry_outputs / seconds);
+            telemetry_tick = now;
+            last_attempts = attempts;
+            last_detections = detections;
+            telemetry_outputs = 0;
+        }
+
+        next_tick += std::chrono::microseconds(
+            1000000 / std::max(1, g_cfg.d4xx_output_fps));
+        const auto after_callback = std::chrono::steady_clock::now();
+        if (next_tick < after_callback) next_tick = after_callback;
+        sleep_worker_until(g_analysisWk, next_tick);
+    }
+    if (inference.joinable()) inference.join();
+    log("analysis: D4xx stopped after %llu output frames",
+        (unsigned long long)output_frames);
+}
+
 // ------------------------------------------------------ analysis worker ----
 static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
     const bool hardware = hardware_skeleton_active();
     log("runtime 5/5: analysis started (%s)", g_kinect ? "kinect NUI skeleton"
         : (g_steamvr ? "SteamVR tracked poses"
-                     : (g_poseOk ? "MediaPipe Pose Landmarker"
+                     : (g_poseOk ? (g_d4xx
+                                      ? "D4xx IR + MediaPipe + metric depth"
+                                      : "MediaPipe Pose Landmarker")
                                  : "MediaPipe unavailable (empty frames)")));
+    if (g_d4xx && !hardware) {
+        d4xx_analysis_loop(cb, ctx);
+        return;
+    }
     std::vector<uint8_t> frame;
     ParsedBody body;
     make_empty_body(body, 0);
@@ -817,14 +1395,10 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
             if (g_poseOk && !frame.empty()) {
                 PoseResult pr;
                 if (g_pose.infer(frame.data(), w, h, &pr) && pr.valid) {
+                    if (g_d4xx) g_d4xx->apply_depth_to_pose(&pr);
                     map_pose_to_body(pr, body);
                     detected = true;
                 }
-            }
-            if (detected != last_webcam_valid) {
-                log("analysis: MediaPipe body -> %s",
-                    detected ? "TRACKED" : "NOT TRACKED");
-                last_webcam_valid = detected;
             }
         }
         if (detected) {
@@ -837,7 +1411,16 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
                 last_detected_ms != 0 &&
                 now_ms - last_detected_ms <=
                     (uint64_t)hardware_body_hold_ms();
-            if (hardware_grace || (!hardware && miss <= 5 && body.TrackingState != 0)) {
+            const bool d4xx_grace = !hardware && g_d4xx &&
+                body.TrackingState != 0 && last_detected_ms != 0 &&
+                now_ms - last_detected_ms <=
+                    (uint64_t)g_cfg.d4xx_body_hold_ms;
+            if (d4xx_grace) {
+                // The IR pose detector can briefly return no result on a valid
+                // video track. Retain the last metric pose for a bounded window
+                // so the game's consecutive-frame calibration is not reset.
+            } else if (hardware_grace ||
+                       (!hardware && miss <= 5 && body.TrackingState != 0)) {
                 // Bridge short hardware identity/occlusion gaps with the last stable
                 // body, but mark every joint inferred. A real departure still
                 // becomes NotTracked after the backend's configured hold time.
@@ -851,11 +1434,21 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
                 make_empty_body(body, 0);
             }
         }
+        if (!hardware) {
+            const bool valid_now = body.TrackingState != 0;
+            if (valid_now != last_webcam_valid) {
+                log("analysis: %s body -> %s",
+                    g_d4xx ? "D4xx IR/MediaPipe" : "MediaPipe",
+                    valid_now ? "TRACKED" : "NOT TRACKED");
+                last_webcam_valid = valid_now;
+            }
+        }
 
         uint64_t ts = qpc_now_us();
         ImageDesc* main_img = nullptr;
         ImageDesc* sub_img = nullptr;
-        if (hardware) {
+        const bool compact_pose_images = hardware || g_d4xx;
+        if (compact_pose_images) {
             if (g_kinect && g_cfg.kinect_pose_images &&
                 g_kinect->has_color_stream()) {
                 src_get_frame(frame, w, h);
@@ -872,7 +1465,7 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
             main_img = make_image_desc(pixels, w, h);
             sub_img = make_image_desc(pixels, w, h);
         }
-        if (!main_img || (!hardware && !sub_img)) {
+        if (!main_img || (!compact_pose_images && !sub_img)) {
             static int drop_log = 0;
             if (++drop_log % 300 == 1)
                 log("analysis: image pool cap reached, delivering frame without images");
@@ -930,10 +1523,12 @@ static void t_ReleaseImageDesc(ImageDesc* p) {
 }
 
 static intptr_t t_Initialize(void) {
-    config_apply_environment();
+    if (g_cfgPath.empty()) config_load_file(nullptr);
+    else config_apply_environment();
     g_initialized = true;
     const char* name = backend() == Backend::Kinect ? "kinect"
-        : (backend() == Backend::SteamVr ? "steamvr" : "webcam");
+        : (backend() == Backend::SteamVr ? "steamvr"
+            : (backend() == Backend::D4xx ? "d4xx" : "webcam"));
     log("runtime 3/5: initialized VP4U shim (backend=%s)", name);
     return 1;
 }
@@ -944,6 +1539,7 @@ static void t_Shutdown(void) {
     g_analysisWk.join();
     g_kinect.reset();
     g_steamvr.reset();
+    g_d4xx.reset();
     g_cam.reset();
     if (g_poseOk) { g_pose.shutdown(); g_poseOk = false; }
     g_initialized = false;
@@ -1003,6 +1599,45 @@ static bool t_OpenRealSense(void) {
         log("runtime 4/5: SteamVR runtime FAILED: %s", error.c_str());
         return false;
     }
+    if (backend() == Backend::D4xx) {
+        log("runtime 4/5: opening D4xx depth+infrared devices");
+        D4xxOptions options;
+        options.runtime_path = d4xx_runtime_default();
+        options.width = g_cfg.capture_w;
+        options.height = g_cfg.capture_h;
+        options.fps = g_cfg.capture_fps;
+        options.primary_device = g_cfg.d4xx_primary_device;
+        options.primary_serial = g_cfg.d4xx_primary_serial;
+        options.required_devices = g_cfg.d4xx_required_devices;
+        options.infrared_index = g_cfg.d4xx_infrared_index;
+        options.depth_scale_m = g_cfg.d4xx_depth_scale_m;
+        options.mirror_center_x = g_cfg.d4xx_mirror_center_x;
+        options.face_to_face = g_cfg.d4xx_face_to_face;
+        options.auto_center_z = g_cfg.d4xx_auto_center_z;
+        options.stage_hip_z = g_cfg.d4xx_stage_hip_z;
+        options.offset_x = g_cfg.d4xx_offset_x;
+        options.offset_y = g_cfg.d4xx_offset_y;
+        options.offset_z = g_cfg.d4xx_offset_z;
+        options.pitch_degrees = g_cfg.d4xx_pitch_degrees;
+        options.yaw_degrees = g_cfg.d4xx_yaw_degrees;
+        options.roll_degrees = g_cfg.d4xx_roll_degrees;
+        options.smoothing = g_cfg.d4xx_smoothing;
+        options.log = [](void*, const char* message) { log("%s", message); };
+        std::string error;
+        g_d4xx = D4xxSource::acquire(options, &error);
+        const bool ready = g_d4xx && g_d4xx->wait_until_ready(8000);
+        if (ready) {
+            log("runtime 4/5: D4xx ready (%d/%d devices, IR->BGR24, "
+                "depth->3D)", g_d4xx->active_device_count(),
+                g_d4xx->device_count());
+            return true;
+        }
+        log("runtime 4/5: D4xx FAILED: %s",
+            error.empty() ? "no depth/infrared frame within 8 seconds"
+                          : error.c_str());
+        g_d4xx.reset();
+        return false;
+    }
     int n = count_physical_cameras();
     log("runtime 4/5: %d USB camera(s), opening index %d",
         n, g_cfg.camera_index);
@@ -1023,10 +1658,12 @@ static bool t_OpenRealSense(void) {
 }
 
 static bool t_RealSenseLeftIsActive(void) {
-    return hardware_skeleton_active() || (g_cam && g_cam->is_real_camera());
+    return hardware_skeleton_active() || (g_d4xx && g_d4xx->left_active()) ||
+        (g_cam && g_cam->is_real_camera());
 }
 static bool t_RealSenseRightIsActive(void) {
-    return hardware_skeleton_active() || (g_cam && g_cam->is_real_camera());
+    return hardware_skeleton_active() || (g_d4xx && g_d4xx->right_active()) ||
+        (g_cam && g_cam->is_real_camera());
 }
 
 static bool t_TryRebootRealSense(bool forceReboot) {
@@ -1040,7 +1677,7 @@ static bool t_TryRebuildRealSenseFilters(void) {
 
 static int init_pose_engine(const char* productKey, const char* mode) {
     (void)productKey;
-    if (backend() != Backend::Webcam) {
+    if (backend() == Backend::Kinect || backend() == Backend::SteamVr) {
         // The game initializes VisionPose before it calls OpenRealSense, so
         // the hardware source is still null here. Select by the configured
         // backend to avoid creating an unused MediaPipe thread pool.
@@ -1057,7 +1694,10 @@ static int init_pose_engine(const char* productKey, const char* mode) {
     calib.hip_stage_z = g_cfg.hip_stage_z;
     calib.torso_len_m = g_cfg.torso_len_m;
     calib.z_damping = g_cfg.z_damping;
-    calib.ema_alpha = g_cfg.ema_alpha;
+    // D4xx applies its metric-space filter after depth fusion. Filtering the
+    // monocular world landmarks first adds a second delay only on joints whose
+    // depth sample is temporarily unavailable.
+    calib.ema_alpha = backend() == Backend::D4xx ? 1.0f : g_cfg.ema_alpha;
     std::string err;
     if (g_poseOk) { log("InitVisionPose%s: already initialized", mode); return 1; }
     if (g_pose.init(runtime_dir, model_path, calib, &err)) {
