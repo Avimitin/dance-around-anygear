@@ -86,5 +86,80 @@
       "url": "https://storage.googleapis.com/mediapipe-assets/tasks/testdata/vision/pose.jpg?generation=1782185208547605",
       "sha256": "C8A830ED683C0276D713DD5AEDA28F415F10CD6291972084A40D0D8B934ED62B"
     }
+  },
+  "realSenseD4xxNative": {
+    "cuda": {
+      "version": "11.1.1",
+      "windowsMinimumDriver": "456.81",
+      "archiveUrl": "https://developer.nvidia.com/cuda-11.1.1-download-archive?target_arch=x86_64&target_os=Windows&target_type=exenetwork&target_version=10",
+      "requiredRuntimeFiles": [
+        "cudart64_110.dll",
+        "cublas64_11.dll",
+        "cublasLt64_11.dll",
+        "nvrtc64_111_0.dll",
+        "nvrtc-builtins64_111.dll"
+      ]
+    },
+    "tensorRt": {
+      "version": "7.2.1.6",
+      "archiveFile": "TensorRT-7.2.1.6.Windows10.x86_64.cuda-11.1.cudnn8.0.zip",
+      "archiveUrl": "https://developer.nvidia.com/nvidia-tensorrt-7x-download",
+      "archiveBytes": 589099640,
+      "archiveSha256": "901C2385B0CB6C92B024F92F58E931DEE6460308B3754BCDCAEDD192560BD159",
+      "runtimeFiles": {
+        "myelin64_1.dll": {
+          "bytes": 4661248,
+          "sha256": "D4B151D8ABE4383E549C00D92F452F620455CC5F95022F7684126AD1622E497E"
+        },
+        "nvinfer.dll": {
+          "bytes": 632995840,
+          "sha256": "B63D072D45B4F4BF7A441052A8E921AC2FE4217105F958E7537B6AC93ABA6C50"
+        },
+        "nvinfer_plugin.dll": {
+          "bytes": 14773248,
+          "sha256": "1BCC231E9E736CE01A37935659E24CB99757D29224F7389FF8400BE77485924F"
+        },
+        "nvonnxparser.dll": {
+          "bytes": 1927680,
+          "sha256": "6C95947FFF2158D9C453E001CC1E2554B5DD39BCADF606D4EE724EB825F18AC3"
+        },
+        "nvparsers.dll": {
+          "bytes": 2469888,
+          "sha256": "D15EBB3A032B1558DF218ED741E96CE2A4C8B6BCB740A5F4DAE11A687B38E2AB"
+        }
+      }
+    },
+    "cuDnn": {
+      "version": "8.0.4.30",
+      "archiveFile": "cudnn-11.1-windows-x64-v8.0.4.30.zip",
+      "archiveUrl": "https://developer.nvidia.com/rdp/cudnn-archive",
+      "archiveBytes": 758009704,
+      "archiveSha256": "58BF1FB324D11088A28C3A9F71A38F5DFE167EFDF723815DCE1867BC03DDAEA2",
+      "runtimeFiles": {
+        "cudnn64_8.dll": {
+          "bytes": 222720,
+          "sha256": "E35F7D0D07861EDF99F61DF4165E168508A9A644718F4637A17A7A45C1696164"
+        },
+        "cudnn_adv_infer64_8.dll": {
+          "bytes": 146418176,
+          "sha256": "3AE337AD6873BDD0776C3EB3029CF145BE7A18CF2E987463DE287B95836DC468"
+        },
+        "cudnn_cnn_infer64_8.dll": {
+          "bytes": 659983872,
+          "sha256": "C1D1A2C9C13C44478684C05D1A6F1DC59BCB457C7298ACC16383BD3131F73E05"
+        },
+        "cudnn_ops_infer64_8.dll": {
+          "bytes": 323019776,
+          "sha256": "1E76B22FD77D6F6A5612A167E7D42EA65F6AEE7A0BA341D4A5A8CD6C912A66D1"
+        }
+      }
+    },
+    "librealsense": {
+      "version": "2.50.0",
+      "cApiVersion": 25000,
+      "releaseUrl": "https://github.com/realsenseai/librealsense/releases/tag/v2.50.0",
+      "windowsInstallerFile": "Intel.RealSense.SDK-WIN10-2.50.0.3785.exe",
+      "windowsInstallerUrl": "https://github.com/realsenseai/librealsense/releases/download/v2.50.0/Intel.RealSense.SDK-WIN10-2.50.0.3785.exe"
+    }
   }
 }

@@ -13,17 +13,26 @@ unrelated to RealSense capture.
 
 | Component | Required version | Why it is pinned | Official download |
 |---|---:|---|---|
-| NVIDIA display driver | 451.82 or newer | CUDA 11.0 Update 1 minimum on Windows; newer drivers are backward compatible | [NVIDIA driver download](https://www.nvidia.com/download/index.aspx) |
-| CUDA Toolkit | 11.0 Update 1 (`11.0.3`) | Provides `cudart64_110.dll`, CUDA 11 cuBLAS, and related runtime DLLs | [CUDA 11.0 Update 1 archive](https://developer.nvidia.com/cuda-11-0-1-download-archive?target_os=Windows) |
-| cuDNN | 8.0.4 for CUDA 11.x, Windows x64 | The version NVIDIA tested with TensorRT 7.2.1 | [cuDNN archive](https://developer.nvidia.com/rdp/cudnn-archive) |
-| TensorRT | 7.2.1.6, Windows 10 x64, CUDA 11.0, cuDNN 8.0 | Matches the native model toolchain; serialized plans are version-sensitive | [TensorRT 7.x archive](https://developer.nvidia.com/nvidia-tensorrt-7x-download) |
+| NVIDIA display driver | 456.81 or newer | CUDA 11.1 Update 1 minimum on Windows; newer drivers are backward compatible | [NVIDIA driver download](https://www.nvidia.com/download/index.aspx) |
+| CUDA Toolkit | 11.1 Update 1 (`11.1.1`) | Provides the exact `nvrtc64_111_0.dll` imported by the selected TensorRT package | [CUDA 11.1 Update 1 archive](https://developer.nvidia.com/cuda-11.1.1-download-archive?target_arch=x86_64&target_os=Windows&target_type=exenetwork&target_version=10) |
+| cuDNN | 8.0.4.30, Windows x64, CUDA 11.1 | The version NVIDIA tested with TensorRT 7.2.1 | [cuDNN archive](https://developer.nvidia.com/rdp/cudnn-archive) |
+| TensorRT | 7.2.1.6, Windows 10 x64, CUDA 11.1, cuDNN 8.0 | Matches the native model toolchain; serialized plans are version-sensitive | [TensorRT 7.x archive](https://developer.nvidia.com/nvidia-tensorrt-7x-download) |
 | librealsense | 2.50.0, C API `25000`, Windows x64 | Matches the validated native runtime API and supports D410/D420/D430/D430i/D450 | [librealsense v2.50.0 release](https://github.com/realsenseai/librealsense/releases/tag/v2.50.0) |
 
 The exact TensorRT archive name is:
 
 ```text
-TensorRT-7.2.1.6.Windows10.x86_64.cuda-11.0.cudnn8.0.zip
+TensorRT-7.2.1.6.Windows10.x86_64.cuda-11.1.cudnn8.0.zip
 ```
+
+The exact cuDNN archive name is:
+
+```text
+cudnn-11.1-windows-x64-v8.0.4.30.zip
+```
+
+The CUDA network installer is named `cuda_11.1.1_win10_network.exe`. The local
+installer from the same archive page is also suitable.
 
 The exact RealSense SDK installer is:
 
@@ -40,10 +49,10 @@ installer. Python, TensorFlow, PyTorch, and TensorRT Python wheels are not
 needed.
 
 NVIDIA's TensorRT 7.2.1 release notes list CUDA 10.2, CUDA 11.0 Update 1, and
-CUDA 11.1 as supported, and cuDNN 8.0.4 as the tested release. The CUDA 11.0
-Update 1 release notes list Windows driver 451.82 as its minimum. See the
+CUDA 11.1 as supported, and cuDNN 8.0.4 as the tested release. The CUDA 11.1
+Update 1 release notes list Windows driver 456.81 as its minimum. See the
 [TensorRT release notes](https://docs.nvidia.com/deeplearning/tensorrt/archives/tensorrt-861/release-notes/index.html)
-and [CUDA 11.0 release notes](https://docs.nvidia.com/cuda/archive/11.0/cuda-toolkit-release-notes/index.html).
+and [CUDA 11.1 Update 1 release notes](https://docs.nvidia.com/cuda/archive/11.1.1/cuda-toolkit-release-notes/index.html).
 
 ## Installation
 
@@ -55,11 +64,11 @@ Open PowerShell and run:
 nvidia-smi
 ```
 
-The command must show the NVIDIA GPU and a driver version at least `451.82`.
+The command must show the NVIDIA GPU and a driver version at least `456.81`.
 A recent driver is preferable. Do not downgrade a working recent driver to the
 old driver bundled in the CUDA installer.
 
-### 2. Install CUDA 11.0 Update 1
+### 2. Install CUDA 11.1 Update 1
 
 On the CUDA archive page select:
 
@@ -67,7 +76,7 @@ On the CUDA archive page select:
 Operating System: Windows
 Architecture: x86_64
 Version: 10
-Installer Type: exe (local)
+Installer Type: exe (network) or exe (local)
 ```
 
 Run the downloaded installer and choose **Custom (Advanced)**. Keep the CUDA
@@ -78,47 +87,48 @@ integration, samples, and documentation are optional for runtime-only use.
 The normal destination is:
 
 ```text
-C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.0
+C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1
 ```
 
 Verify the runtime without starting the game:
 
 ```powershell
-$CudaBin = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.0\bin'
+$CudaBin = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1\bin'
 Get-Item "$CudaBin\cudart64_110.dll"
 Get-Item "$CudaBin\cublas64_11.dll"
 Get-Item "$CudaBin\cublasLt64_11.dll"
+Get-Item "$CudaBin\nvrtc64_111_0.dll"
 ```
 
-All three commands must return a file.
+All four commands must return a file.
 
-### 3. Extract cuDNN 8.0.4
+CUDA 11.0 and 11.1 can be installed side by side. A pre-existing `v11.0`
+directory does not satisfy this package: TensorRT imports `nvrtc64_111_0.dll`,
+whereas CUDA 11.0 installs `nvrtc64_110_0.dll`.
 
-On the cuDNN archive page select **cuDNN 8.0.4 for CUDA 11.x**, then download
-the Windows x64 ZIP. Extract it into a versioned directory such as:
+### 3. Verify and extract the two NVIDIA archives
 
-```text
-D:\dance-around-runtime\cudnn-8.0.4
-```
-
-Do not merge it into a newer CUDA installation. Confirm that its `bin`
-directory contains `cudnn64_8.dll` and the accompanying cuDNN 8 inference
-DLLs:
+Place the exact TensorRT and cuDNN ZIP files in a download directory. From a
+clean checkout, run the repository bootstrap script:
 
 ```powershell
-Get-ChildItem 'D:\dance-around-runtime\cudnn-8.0.4' -Recurse -Filter 'cudnn*64_8.dll'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\bootstrap-nvidia-d4xx.ps1 `
+  -TensorRtZip 'D:\Downloads\TensorRT-7.2.1.6.Windows10.x86_64.cuda-11.1.cudnn8.0.zip' `
+  -CuDnnZip 'D:\Downloads\cudnn-11.1-windows-x64-v8.0.4.30.zip'
 ```
 
-### 4. Extract TensorRT 7.2.1.6
+The script checks the pinned SHA-256 hashes, extracts only headers, import
+libraries, runtime DLLs, and license files under the ignored `.deps` directory,
+and writes a file-by-file manifest. It never modifies the CUDA installation or
+the game directory.
 
-On the TensorRT 7.x page expand **TensorRT 7.2.1 GA** and download the exact
-Windows/CUDA 11.0 archive named above. Extract it to:
+Then run the isolated load test:
 
-```text
-D:\dance-around-runtime\TensorRT-7.2.1.6
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\diagnostics\test-nvidia-d4xx.ps1
 ```
 
-The extracted `TensorRT-7.2.1.6\lib` directory must contain at least:
+The test must load the following libraries and end with `[OK]`:
 
 ```text
 nvinfer.dll
@@ -131,7 +141,7 @@ Files ending in `.lib` are build-time import libraries; they do not replace
 the runtime `.dll` files. Do not install TensorRT 8, 10, 11, or TensorRT-RTX
 for this path. They do not provide the requested 7.2.1 ABI.
 
-### 5. Install or extract librealsense 2.50.0
+### 4. Install or extract librealsense 2.50.0
 
 Run `Intel.RealSense.SDK-WIN10-2.50.0.3785.exe`, or build the `v2.50.0` source
 tag. Connect each D430 directly to a USB 3 controller when possible. Use the
@@ -159,9 +169,11 @@ dance_around_anygear_d4xx\
   nvinfer_plugin.dll
   nvonnxparser.dll
   nvparsers.dll
-  cudart64_110.dll                     <- CUDA 11.0 Update 1
+  cudart64_110.dll                     <- CUDA 11.1 Update 1
   cublas64_11.dll
   cublasLt64_11.dll
+  nvrtc64_111_0.dll
+  nvrtc-builtins64_111.dll
   cudnn64_8.dll                        <- cuDNN 8.0.4 family
   cudnn_adv_infer64_8.dll
   cudnn_cnn_infer64_8.dll
@@ -185,6 +197,9 @@ paths; do not overwrite game files manually.
   set.
 - `nvidia-smi` works but `cudart64_110.dll` is absent: the display driver is
   installed, but the CUDA 11 runtime is not. They are separate packages.
+- `nvrtc64_110_0.dll` exists but `nvrtc64_111_0.dll` does not: CUDA 11.0 is
+  installed, but the selected TensorRT archive was built for CUDA 11.1. Install
+  CUDA 11.1 Update 1 side by side; do not rename either DLL.
 - A local `nvinfer.dll` is only a few kilobytes: it is not the official
   TensorRT runtime. Application-local DLLs are searched before global `PATH`
   entries and can hide a correct installation.
