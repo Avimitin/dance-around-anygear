@@ -54,6 +54,11 @@ jobs:
           path: .deps
           key: windows-2025-anygear-deps-v1-${{ hashFiles('dependency-lock.json', 'tools/bootstrap-*.ps1') }}
 
+      - name: Install the pinned uv build frontend
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.12.7'
+
       - name: Prepare the pinned build inputs
         run: |
           $ErrorActionPreference = 'Stop'
@@ -61,21 +66,30 @@ jobs:
           ./tools/bootstrap-kinect-sdk.ps1 -Download
           ./tools/bootstrap-openvr.ps1 -Download
           ./tools/bootstrap-mediapipe.ps1 -Download
+          ./tools/bootstrap-librealsense.ps1 -Download
+          ./tools/bootstrap-spike-runtime.ps1 -Download
 
       - name: Build every backend DLL
         run: |
           $ErrorActionPreference = 'Stop'
           ./tools/build.ps1 -ToolchainRoot $env:ANYGEAR_TOOLCHAIN_ROOT -Clean
 
-      - name: Run offline loader, ABI, pose, and MediaPipe tests
+      - name: Freeze the pinned DirectML worker
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./tools/build-spike-worker.ps1 -Clean
+
+      - name: Run offline loader, ABI, pose, MediaPipe, and SPiKE tests
         run: |
           $ErrorActionPreference = 'Stop'
           ./tools/test.ps1 -SkipBuild -MediaPipe
+          ./tools/test-spike-runtime.ps1
 
       - name: Require byte-for-byte reproducible DLLs
         run: |
           $ErrorActionPreference = 'Stop'
           ./tools/check-reproducible.ps1 -ToolchainRoot $env:ANYGEAR_TOOLCHAIN_ROOT
+          ./tools/check-spike-worker-reproducible.ps1
 
       - name: Stage camera-specific release assets
         run: |
@@ -97,8 +111,10 @@ jobs:
           Camera-specific assets:
 
           - `dance_around_anygear_kinect.dll`: standalone Kinect for Windows v1 plugin.
+          - `dance_around_anygear_d4xx.dll`: experimental native-VP4U D4xx stream adapter.
           - `dance-around-anygear-*-webcam-win64.zip`: webcam plugin, MediaPipe runtime, Pose Landmarker model, and notices.
           - `dance-around-anygear-*-steamvr-win64.zip`: SteamVR plugin, OpenVR client runtime, and license.
+          - `dance-around-anygear-*-d4xx-spike-win64.zip`: depth-only D4xx plugin, DirectML worker, SPiKE model, and librealsense runtime.
           - `SHA256SUMS`: hashes for every runtime asset and the build manifest.
 
           Extract ZIP assets without changing their internal directory layout. Spice still receives only the backend DLL through `-k`.
@@ -108,8 +124,8 @@ jobs:
               $notesPath, $notes.Trim() + "`n", [Text.UTF8Encoding]::new($false))
           $assets = @(Get-ChildItem -LiteralPath artifacts/release -File |
               Sort-Object Name | ForEach-Object FullName)
-          if ($assets.Count -ne 5) {
-              throw "Expected five release assets, found $($assets.Count)."
+          if ($assets.Count -ne 7) {
+              throw "Expected seven release assets, found $($assets.Count)."
           }
           & gh release create $tag @assets `
               --repo $env:GITHUB_REPOSITORY `

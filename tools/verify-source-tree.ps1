@@ -15,6 +15,7 @@ $Violations = Get-ChildItem -LiteralPath $RepositoryRoot -Recurse -File -Force |
     Where-Object {
         $_.FullName -notmatch '[\\/]\.git[\\/]' -and
         $_.FullName -notmatch '[\\/](build(?:-[^\\/]+)?|dist|artifacts|\.deps|\.cache)[\\/]' -and
+        $_.FullName -notmatch '[\\/](\.venv|__pycache__)[\\/]' -and
         $ForbiddenExtensions -contains $_.Extension.ToLowerInvariant()
     }
 if ($Violations) {

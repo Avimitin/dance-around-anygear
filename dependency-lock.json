@@ -174,9 +174,112 @@
     "librealsense": {
       "version": "2.50.0",
       "cApiVersion": 25000,
+      "sourceCommit": "c94410a420b74e5fb6a414bd12215c05ddd82b69",
+      "sourceArchive": {
+        "url": "https://codeload.github.com/IntelRealSense/librealsense/tar.gz/c94410a420b74e5fb6a414bd12215c05ddd82b69",
+        "bytes": 69300452,
+        "sha256": "863B0491D8E72AF960E742F32A24F0E9BE9CF6BB735C435612F75FE6C6E5BE35"
+      },
       "releaseUrl": "https://github.com/realsenseai/librealsense/releases/tag/v2.50.0",
       "windowsInstallerFile": "Intel.RealSense.SDK-WIN10-2.50.0.3785.exe",
-      "windowsInstallerUrl": "https://github.com/realsenseai/librealsense/releases/download/v2.50.0/Intel.RealSense.SDK-WIN10-2.50.0.3785.exe"
+      "windowsInstallerUrl": "https://github.com/realsenseai/librealsense/releases/download/v2.50.0/Intel.RealSense.SDK-WIN10-2.50.0.3785.exe",
+      "unityPackage": {
+        "url": "https://github.com/realsenseai/librealsense/releases/download/v2.50.0/Intel.RealSense.unitypackage",
+        "bytes": 11507297,
+        "sha256": "F94A6047A6DB845FE0C994591E28F73533A4E84A082507BB5D1FD79284CB1073"
+      },
+      "windowsRuntime": {
+        "file": "realsense2.dll",
+        "bytes": 31955456,
+        "sha256": "C8B83F041C1D92C264A0BFCDA5C9F28197ED212F7FAC40237DF63FFD2D5D1C4A"
+      },
+      "licenseFile": {
+        "bytes": 11352,
+        "sha256": "C7AA1FDF0E38C4827FEF17859DDBFAC800B8995F3EC875A06DD23C79135F956D"
+      }
+    }
+  },
+  "spikeD4xx": {
+    "sourceRepository": "https://github.com/iballester/SPiKE.git",
+    "sourceCommit": "57ddaec83dad754aed813afacab4d0591fd387b1",
+    "paper": "https://arxiv.org/abs/2409.01879",
+    "license": "MIT",
+    "checkpoint": {
+      "sharePage": "https://cloud.cvl.tuwien.ac.at/s/ATCBp34rH3fGJ23",
+      "downloadUrl": "https://cloud.cvl.tuwien.ac.at/public.php/dav/files/ATCBp34rH3fGJ23",
+      "bytes": 521315225,
+      "sha256": "FF29500C6747BB535476B7CAA5352F27CA62E97F5A748E59EDF646F7BC778E75"
+    },
+    "export": {
+      "python": "3.10.5",
+      "torch": "2.11.0+cpu",
+      "torchWindowsWheelBytes": 114431462,
+      "torchWindowsWheelSha256": "FE708AA0C1DF5CCE9962DF806065534AE9AF5EB29EE6145A705176266427C931",
+      "onnx": "1.22.0",
+      "opset": 20,
+      "outputFile": "spike-itop-side-primary-fp16.onnx",
+      "outputBytes": 143295911,
+      "outputSha256": "C48C40FF94C8F358762DB296DA0117DCFF78D8C4AD2FA4DB575298979BF2DA0D"
+    },
+    "runtime": {
+      "engine": "ONNX Runtime DirectML",
+      "python": "3.10.5",
+      "uv": "0.12.7",
+      "connectedComponents3d": {
+        "version": "4.0.0",
+        "sourceRepository": "https://github.com/seung-lab/connected-components-3d.git",
+        "sourceCommit": "4e8a9fe2c1353c29122a22ac3c04dd610fc303d5",
+        "license": "LGPL-3.0-or-later",
+        "windowsWheelBytes": 563844,
+        "windowsWheelSha256": "9EE5D82717B451846EFDE7D7F1F4C1443F1B1615177C02335EFA7010254CF868"
+      },
+      "onnxRuntimeDirectMl": "1.23.0",
+      "windowsWheelBytes": 25113303,
+      "windowsWheelSha256": "184FB5255B544EDC2A14E95051F91864AB4DD868425472B54C3F26D2C3B1F456",
+      "numpy": "2.2.6",
+      "numpyWindowsWheelSha256": "F0FD6321B839904E15C46E0D257FDD101DD7F530FE03FD6359C1EA63738703F3",
+      "pyInstaller": "6.22.2"
+    },
+    "research": {
+      "python": "3.10.5",
+      "uv": "0.12.7",
+      "numpy": "2.2.6",
+      "torch": "2.11.0+cu128",
+      "torchIndex": "https://download.pytorch.org/whl/cu128",
+      "torchWindowsWheelSha256": "7C792FE95AD5EDAF622CF9E4F5573F5AECF2BC0654C7E866EDA6134088F95D72",
+      "deterministicAttention": "PyTorch math SDPA"
+    },
+    "surfaceCalibration": {
+      "scipy": "1.15.3",
+      "purpose": "offline deterministic cKDTree correspondence search",
+      "windowsWheelUrl": "https://files.pythonhosted.org/packages/d1/84/55bc4881973d3f79b479a5a2e2df61c8c9a04fcb986a213ac9c02cfb659b/scipy-1.15.3-cp310-cp310-win_amd64.whl",
+      "windowsWheelBytes": 41259201,
+      "windowsWheelSha256": "9D61E97B186A57350F6D6FD72640F9E99D5A4A2B8FBF4B9EE9A841EAB327DC13"
+    },
+    "itopEvaluation": {
+      "datasetVersion": "1.0",
+      "datasetRecord": "https://zenodo.org/records/3932973",
+      "requiredArchives": {
+        "ITOP_side_test_point_cloud.h5.gz": {
+          "url": "https://zenodo.org/records/3932973/files/ITOP_side_test_point_cloud.h5.gz?download=1",
+          "bytes": 2061701631,
+          "md5": "3F5227D6F260011B19F325FFFDE08A65",
+          "sha256": "4B11F4316D52C419C175612FD2D1227394419FB8771CFEE46E80E763C50E1AD5",
+          "expandedBytes": 4838952960,
+          "expandedSha256": "8943783BE8776EECBB9380239F7B2D7F6497C5D73AE0BA55F618211C50C7E280"
+        },
+        "ITOP_side_test_labels.h5.gz": {
+          "url": "https://zenodo.org/records/3932973/files/ITOP_side_test_labels.h5.gz?download=1",
+          "bytes": 3699135,
+          "md5": "7205B0BA47F76892742DED774754D7A1",
+          "sha256": "4141D7609CAB4B65EA184E2EF930460ACE43B6FC19A22E9337AF3335E9EFC8B8",
+          "expandedBytes": 808314880,
+          "expandedSha256": "F7A1C54DD5CD3F3CD163E0996429D0D65E9FECF675A75C42E7B5BCFDC72FD4A7"
+        }
+      },
+      "h5py": "3.14.0",
+      "h5pyWindowsWheelBytes": 2866734,
+      "h5pyWindowsWheelSha256": "852B81F71DF4BB9E27D407B43071D1DA330D6A7094A588EFA50EF02553FA7CE4"
     }
   }
 }

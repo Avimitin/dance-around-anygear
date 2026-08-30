@@ -1,0 +1,39 @@
+[project]
+name = "dance-around-anygear-spike-worker"
+version = "0.4.0"
+description = "Depth-only SPiKE worker for the Anygear D4xx backend"
+requires-python = "==3.10.*"
+dependencies = [
+    "connected-components-3d==4.0.0",
+    "numpy==2.2.6",
+    "onnxruntime-directml==1.23.0",
+]
+
+[dependency-groups]
+build = [
+    "pyinstaller==6.22.2",
+]
+dev = [
+    "pytest==8.4.2",
+]
+export = [
+    "onnx==1.22.0",
+    "torch==2.11.0+cpu",
+]
+itop = [
+    "h5py==3.14.0",
+]
+calibration = [
+    "scipy==1.15.3",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

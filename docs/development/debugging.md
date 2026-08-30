@@ -105,12 +105,36 @@ RealSense Viewer and the TensorRT 7.2.1.6 directory contains genuine runtime
 DLLs. A local placeholder DLL shadows a system installation and must never be
 treated as a successful dependency check.
 
+That requirement belongs to the native VP4U evaluation path. The independent
+D4xx/SPiKE backend requests Z16 only and uses DirectML; it does not require an
+infrared transfer, TensorRT, CUDA, or cuDNN. Keep its stage empty during the
+initial background-calibration window described in
+[realsense-d4xx-spike.md](../backends/realsense-d4xx-spike.md).
+
+Before a full game check, compare both live depth views, isolated point clouds,
+and SPiKE skeletons in the local viewer:
+
+```powershell
+./tools/start-d4xx-spike-viewer.ps1 `
+  -RealSenseRuntime C:\cabinet\dance_around_anygear_d4xx_spike\realsense2.dll `
+  -Config C:\cabinet\dance_around_anygear_d4xx_spike.json `
+  -Model C:\cabinet\dance_around_anygear_d4xx_spike\spike-itop-side-primary-fp16.onnx
+```
+
+Keep both views empty until the page reports that background calibration is
+complete. Use single-camera inference to diagnose one mount, then dual mode to
+compare complementary views under the same total model-call budget. A correct
+raw depth silhouette with a correct isolated point cloud but an incorrect
+skeleton localizes the problem to model generalization or point preprocessing,
+not camera placement. A visible person with zero isolated points localizes it
+to background, ROI, floor, or connected-component selection.
+
 ## 6. Full game check
 
 Install and generate the short launcher without running it:
 
 ```powershell
-./tools/install-local.ps1 -CabinetRoot D:\UDN -GenerateLauncher
+./tools/install-local.ps1 -CabinetRoot C:\cabinet -GenerateLauncher
 ```
 
 The generated BAT supplies the Spice-owned arguments:
@@ -143,9 +167,11 @@ stage 4/4: backend ready; waiting for Unity VP4U calls
 ```
 
 Once Unity enters the VP4U ABI, a second `runtime 1/5` through `runtime 5/5`
-sequence identifies the last completed ABI/sensor stage. Release builds log
-tracking acquisition and loss only when state changes; periodic joint/resource
-telemetry is intentionally left to `tools/diagnostics/`.
+sequence identifies the last completed ABI/sensor stage. Stable backends log
+tracking acquisition and loss only when state changes. The experimental SPiKE
+worker additionally emits one aggregate line per 300 outputs with pose rate
+and pipeline/inference/source-age P50/P95; joint-level diagnostics remain in
+`tools/diagnostics/`.
 
 ## Resource invariants
 
@@ -159,3 +185,12 @@ telemetry is intentionally left to `tools/diagnostics/`.
   capped at 15 Hz and shares the same bounded image pool.
 - SteamVR polls standing-space poses at 60 Hz, creates no render context, and
   uses the same 1x1 image-token path as skeleton-only Kinect.
+- D4xx/SPiKE transfers native Z16 only. A stopped input becomes invalid in the
+  worker after 150 ms; the capture DLL rebuilds a faulted/stalled librealsense
+  pipeline by serial and logs each 500 ms retry without preserving its old
+  depth packet.
+- The DirectML worker performs at most one fixed batch-1 model call per output.
+  A sequence skip or capture gap over 75 ms clears the three-frame clip before
+  inference resumes.
+- D4xx deprojection caches calibrated distortion-corrected rays per sensor, so
+  the correction is not recomputed on every frame.

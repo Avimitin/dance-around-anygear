@@ -18,15 +18,15 @@ Apply the patches in numeric order:
 git clone https://github.com/spice2x/spice2x.github.io.git spice2x
 Set-Location spice2x
 git checkout 4009bb8a840fb5ceabeef4ba9610a1eeb2804378
-$patches = Get-ChildItem D:\Share\dance-around-anygear\integration\spice2x -Filter *.patch |
+$patches = Get-ChildItem ..\dance-around-anygear\integration\spice2x -Filter *.patch |
     Sort-Object Name
 git am $patches.FullName
 ```
 
 After application, `git rev-parse 'HEAD^{tree}'` must print
-`2974a165d181cbb4ab222b6b8f80d8703657e07f`.
+`405844da84463e37ccebabd89bd50c1ebb50367a`.
 
-The five commits are deliberately separated for upstream review:
+The seven commits are deliberately separated for upstream review:
 
 1. Append a size-gated `hook_library` callback to Spice SDK v0.3. This lets a
    `-k` plugin register an in-memory implementation for a later DLL request.
@@ -40,6 +40,11 @@ The five commits are deliberately separated for upstream review:
 5. Honor Spice's existing `-windowsize width,height` and `-windowpos x,y`
    arguments for DANCE aROUND, including the first visible frame, and preserve
    the position after Unity window calls or an interactive drag.
+6. Apply the follow-up UDN review changes: isolate game-specific window policy,
+   use Spice's shared clock helper, and retain the existing NDD behavior.
+7. Pace the windowed D3D11 swap chain with an explicit 60 FPS clock so a
+   desktop refresh rate such as 75 Hz does not reduce the game to 37.5 FPS;
+   retain the cabinet interval-two cadence in fullscreen mode.
 
 The series was clean-built as the `spicetools_spice64` target with GCC 16.2.0
 and Ninja on the pinned base. The static-DLL import check passed. The MinGW

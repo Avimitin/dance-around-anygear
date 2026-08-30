@@ -1,22 +1,15 @@
 {
-  "D4xxPlacement": {
-    "PrimaryDevice": 0,
-    "PrimarySerial": "",
-    "RequiredDevices": 2,
+  "D4xxNativeBridge": {
+    "NvidiaRuntimeRoot": "",
+    "CudaRoot": "",
     "InfraredIndex": 1,
-    "FaceToFace": true,
-    "AutoCenterZ": true,
-    "StageHipZ": 2.3,
-    "MirrorCenterX": 0.55,
-    "OffsetX": 0.0,
-    "OffsetY": 0.0,
-    "OffsetZ": 0.0,
-    "PitchDegrees": 0.0,
-    "YawDegrees": 0.0,
-    "RollDegrees": 0.0,
-    "Smoothing": 0.65,
-    "BodyHoldMs": 250,
-    "OutputFps": 30,
-    "PredictionMs": 20.0
+    "AutoContrast": true,
+    "LowPercentile": 1,
+    "HighPercentile": 99,
+    "MinimumRange": 24,
+    "DiagnosticFrameDirectory": "",
+    "DiagnosticFrameCount": 0,
+    "DiagnosticFrameStride": 1,
+    "RealtimeOnly": true
   }
 }

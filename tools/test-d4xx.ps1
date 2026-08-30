@@ -1,4 +1,6 @@
 [CmdletBinding()]
+# Experimental full replacement retained for A/B comparison. The default D4xx
+# release uses tools/test-d4xx-native.ps1 and the original VisionPose pipeline.
 param(
     [Parameter(Mandatory)]
     [string] $RealSenseRuntime,
@@ -68,20 +70,23 @@ Write-Host "     SHA256: $OutputHash"
 if (-not [string]::IsNullOrWhiteSpace($Vp4uConfig)) {
     $Vp4uConfig = (Resolve-Path -LiteralPath $Vp4uConfig).Path
     $StageRoot = Join-Path $RepositoryRoot 'build\d4xx-config-probe'
-    $StageDependencies = Join-Path $StageRoot 'dance_around_anygear_d4xx'
+    $StageDependencies = Join-Path $StageRoot `
+        'dance_around_anygear_d4xx_mediapipe_experimental'
     New-Item -ItemType Directory -Path $StageDependencies -Force | Out-Null
-    $StagedPlugin = Join-Path $StageRoot 'dance_around_anygear_d4xx.dll'
+    $StagedPlugin = Join-Path $StageRoot `
+        'dance_around_anygear_d4xx_mediapipe_experimental.dll'
     Copy-Item -LiteralPath `
-        (Join-Path $RepositoryRoot 'build\bin\dance_around_anygear_d4xx.dll') `
+        (Join-Path $RepositoryRoot `
+            'build\bin\dance_around_anygear_d4xx_mediapipe_experimental.dll') `
         -Destination $StagedPlugin -Force
     Copy-Item -LiteralPath $RealSenseRuntime `
         -Destination (Join-Path $StageDependencies 'realsense2.dll') -Force
     Copy-Item -LiteralPath $MediaPipeDll -Destination $StageDependencies -Force
     Copy-Item -LiteralPath $MediaPipeModel -Destination $StageDependencies -Force
     Copy-Item -LiteralPath (Join-Path $RepositoryRoot `
-        'config\dance_around_anygear_d4xx.json') `
+        'config\dance_around_anygear_d4xx_mediapipe_experimental.json') `
         -Destination (Join-Path $StageRoot `
-            'dance_around_anygear_d4xx.json') -Force
+            'dance_around_anygear_d4xx_mediapipe_experimental.json') -Force
     $Harness = Join-Path $RepositoryRoot 'build\bin\anygear_vp4u_harness.exe'
     Write-Host "[D4XX] Loading the cabinet JSON through the staged VP4U plugin..."
     & $Harness $StagedPlugin '--pose-init-config' $Vp4uConfig

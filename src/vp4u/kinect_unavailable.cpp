@@ -19,12 +19,19 @@ bool KinectSource::get_frame_bgr8(std::vector<uint8_t>&, int, int) {
 
 bool KinectSource::get_skeleton(PoseResult*) { return false; }
 
-bool KinectSource::wait_for_skeleton(PoseResult*, uint64_t*, int) {
+bool KinectSource::wait_for_skeleton(PoseResult*, uint64_t*, int,
+                                     std::int64_t*, std::uint32_t*,
+                                     PoseResult*, std::int64_t*) {
+    return false;
+}
+
+bool KinectSource::wait_for_depth(KinectDepthFrame*, std::uint64_t*, int) {
     return false;
 }
 
 bool KinectSource::is_real_camera() const { return false; }
 bool KinectSource::has_color_stream() const { return false; }
+bool KinectSource::has_depth_stream() const { return false; }
 int KinectSource::native_width() const { return 0; }
 int KinectSource::native_height() const { return 0; }
 

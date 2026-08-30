@@ -1,10 +1,12 @@
 // VP4U compatibility implementation for external pose sensors.
 #include "vp4u_abi.h"
+#include "body_prediction.h"
 #include "webcam.h"
 #include "pose.h"
 #include "kinect.h"
 #include "steamvr.h"
 #include "d4xx.h"
+#include "spike.h"
 
 #include <algorithm>
 #include <array>
@@ -16,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -85,9 +88,9 @@ struct Config {
     int   image_pool_max = 12;
 #endif
     bool  mirror_x = false;
-    // Kinect v1 NUI skeleton space is right-handed (+Y up, +Z away from
-    // the sensor), which makes +X point to camera-left. The target stage uses
-    // +X camera-right, so the Kinect backend applies a horizontal conversion.
+    // Kinect v1 NUI skeleton +X projects toward increasing depth-image X.
+    // This compatibility view transform is applied before the optional
+    // face-to-face stage orientation; it is independent of sensor calibration.
     bool  kinect_flip_x = true;
     // The performer and on-screen avatar face each other while movement stays
     // mirrored in screen space. Rotate around the configured horizontal center
@@ -124,6 +127,9 @@ struct Config {
     std::string d4xx_primary_serial;
     int   d4xx_required_devices = 2;
     int   d4xx_infrared_index = 1;
+    int   d4xx_frame_stall_timeout_ms = 1500;
+    int   d4xx_reconnect_delay_ms = 500;
+    std::string d4xx_emitter_mode = "all-on";
     float d4xx_depth_scale_m = 0.001f;
     bool  d4xx_face_to_face = true;
     bool  d4xx_auto_center_z = true;
@@ -140,6 +146,12 @@ struct Config {
     int   d4xx_output_fps = 30;
     float d4xx_prediction_ms = 20.0f;
     std::string d4xx_runtime_path;
+    std::string spike_worker_executable;
+    bool  spike_python_module = false;
+    std::string spike_model_path;
+    std::string spike_worker_log_path;
+    int   spike_startup_timeout_ms = 45000;
+    float spike_smoothing = 1.0f;
     float hip_stage_x = 0.9f, hip_stage_y = 1.0f, hip_stage_z = 0.75f;
     float torso_len_m = 0.52f;
     float z_damping = 0.7f;
@@ -193,7 +205,8 @@ static void config_apply_environment() {
         }
     };
 
-#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX)
+#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX) || \
+    defined(ANYGEAR_BACKEND_D4XX_SPIKE)
     apply_int("VP4U_CAPTURE_FPS", 1, 30, &g_cfg.capture_fps);
 #else
     apply_int("VP4U_CAPTURE_FPS", 1, 60, &g_cfg.capture_fps);
@@ -289,12 +302,17 @@ static void json_assign_string(const Json& object, const char* key,
     *target = value->get<std::string>();
 }
 
-#if defined(ANYGEAR_BACKEND_D4XX)
+#if defined(ANYGEAR_BACKEND_D4XX) || defined(ANYGEAR_BACKEND_D4XX_SPIKE)
 static void config_apply_d4xx_placement(const Json& section) {
     json_assign_integer(section, "PrimaryDevice", &g_cfg.d4xx_primary_device);
     json_assign_string(section, "PrimarySerial", &g_cfg.d4xx_primary_serial);
     json_assign_integer(section, "RequiredDevices", &g_cfg.d4xx_required_devices);
     json_assign_integer(section, "InfraredIndex", &g_cfg.d4xx_infrared_index);
+    json_assign_integer(section, "FrameStallTimeoutMs",
+                        &g_cfg.d4xx_frame_stall_timeout_ms);
+    json_assign_integer(section, "ReconnectDelayMs",
+                        &g_cfg.d4xx_reconnect_delay_ms);
+    json_assign_string(section, "EmitterMode", &g_cfg.d4xx_emitter_mode);
     json_assign_boolean(section, "FaceToFace", &g_cfg.d4xx_face_to_face);
     json_assign_boolean(section, "AutoCenterZ", &g_cfg.d4xx_auto_center_z);
     json_assign_number(section, "StageHipZ", &g_cfg.d4xx_stage_hip_z);
@@ -305,11 +323,25 @@ static void config_apply_d4xx_placement(const Json& section) {
     json_assign_number(section, "PitchDegrees", &g_cfg.d4xx_pitch_degrees);
     json_assign_number(section, "YawDegrees", &g_cfg.d4xx_yaw_degrees);
     json_assign_number(section, "RollDegrees", &g_cfg.d4xx_roll_degrees);
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+    json_assign_number(section, "Smoothing", &g_cfg.spike_smoothing);
+#else
     json_assign_number(section, "Smoothing", &g_cfg.d4xx_smoothing);
+#endif
     json_assign_integer(section, "BodyHoldMs", &g_cfg.d4xx_body_hold_ms);
     json_assign_integer(section, "OutputFps", &g_cfg.d4xx_output_fps);
     json_assign_number(section, "PredictionMs", &g_cfg.d4xx_prediction_ms);
 }
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+static void config_apply_spike_worker(const Json& section) {
+    json_assign_string(section, "Executable", &g_cfg.spike_worker_executable);
+    json_assign_boolean(section, "PythonModule", &g_cfg.spike_python_module);
+    json_assign_string(section, "Model", &g_cfg.spike_model_path);
+    json_assign_string(section, "Log", &g_cfg.spike_worker_log_path);
+    json_assign_integer(section, "StartupTimeoutMs",
+                        &g_cfg.spike_startup_timeout_ms);
+}
+#endif
 #endif
 
 static bool read_config_text(const std::string& path, std::string* output) {
@@ -331,9 +363,14 @@ static bool read_config_text(const std::string& path, std::string* output) {
 }
 
 static void config_apply_local_d4xx_file() {
-#if defined(ANYGEAR_BACKEND_D4XX)
+#if defined(ANYGEAR_BACKEND_D4XX) || defined(ANYGEAR_BACKEND_D4XX_SPIKE)
     const std::string path =
-        dll_dir_w() + "\\dance_around_anygear_d4xx.json";
+        dll_dir_w() +
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+        "\\dance_around_anygear_d4xx_spike.json";
+#else
+        "\\dance_around_anygear_d4xx_mediapipe_experimental.json";
+#endif
     std::string json;
     if (!read_config_text(path, &json)) {
         log("placement config: '%s' absent; using built-in defaults", path.c_str());
@@ -351,6 +388,12 @@ static void config_apply_local_d4xx_file() {
         return;
     }
     config_apply_d4xx_placement(*section);
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+    const auto worker = document.find("Worker");
+    if (worker != document.end() && worker->is_object()) {
+        config_apply_spike_worker(*worker);
+    }
+#endif
     log("placement config: loaded '%s'", path.c_str());
 #endif
 }
@@ -456,6 +499,10 @@ static void config_apply_json(const std::string& js) {
     json_assign_string(object, "D4xxPrimarySerial", &g_cfg.d4xx_primary_serial);
     json_assign_integer(object, "D4xxRequiredDevices", &g_cfg.d4xx_required_devices);
     json_assign_integer(object, "D4xxInfraredIndex", &g_cfg.d4xx_infrared_index);
+    json_assign_integer(object, "D4xxFrameStallTimeoutMs",
+                        &g_cfg.d4xx_frame_stall_timeout_ms);
+    json_assign_integer(object, "D4xxReconnectDelayMs",
+                        &g_cfg.d4xx_reconnect_delay_ms);
     json_assign_number(object, "D4xxDepthScaleM", &g_cfg.d4xx_depth_scale_m);
     json_assign_boolean(object, "D4xxFaceToFace", &g_cfg.d4xx_face_to_face);
     json_assign_boolean(object, "D4xxAutoCenterZ", &g_cfg.d4xx_auto_center_z);
@@ -503,21 +550,23 @@ static void config_load_file(const char* path) {
     g_cfg.image_pool_max = 12;
 #endif
     config_apply_environment();
-#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX)
+#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX) || \
+    defined(ANYGEAR_BACKEND_D4XX_SPIKE)
     g_cfg.capture_fps = std::clamp(g_cfg.capture_fps, 1, 30);
 #else
     g_cfg.capture_fps = std::clamp(g_cfg.capture_fps, 1, 60);
 #endif
     g_cfg.preview_fps = std::clamp(g_cfg.preview_fps, 1, 30);
     g_cfg.image_pool_max = std::clamp(g_cfg.image_pool_max, 4, 24);
-#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX)
+#if defined(ANYGEAR_BACKEND_WEBCAM) || defined(ANYGEAR_BACKEND_D4XX) || \
+    defined(ANYGEAR_BACKEND_D4XX_SPIKE)
     // The vendor JSON may request the native D435 image size. Monocular pose
     // does not benefit from submitting more than the validated webcam frame,
     // so keep inference/callback allocations bounded inside the DLL.
     g_cfg.capture_w = std::clamp(g_cfg.capture_w, 160, 848);
     g_cfg.capture_h = std::clamp(g_cfg.capture_h, 120, 480);
 #endif
-#if defined(ANYGEAR_BACKEND_D4XX)
+#if defined(ANYGEAR_BACKEND_D4XX) || defined(ANYGEAR_BACKEND_D4XX_SPIKE)
     // This is the native D430 profile validated by the standalone probe. Keep
     // the two physical streams and MediaPipe input on one fixed pixel grid.
     g_cfg.capture_w = 848;
@@ -528,6 +577,10 @@ static void config_load_file(const char* path) {
         g_cfg.d4xx_required_devices, 1, 8);
     g_cfg.d4xx_infrared_index = std::clamp(
         g_cfg.d4xx_infrared_index, 1, 2);
+    g_cfg.d4xx_frame_stall_timeout_ms = std::clamp(
+        g_cfg.d4xx_frame_stall_timeout_ms, 100, 60000);
+    g_cfg.d4xx_reconnect_delay_ms = std::clamp(
+        g_cfg.d4xx_reconnect_delay_ms, 50, 60000);
     g_cfg.d4xx_depth_scale_m = std::clamp(
         g_cfg.d4xx_depth_scale_m, 0.000001f, 0.1f);
     g_cfg.d4xx_offset_x = std::clamp(g_cfg.d4xx_offset_x, -5.0f, 5.0f);
@@ -546,6 +599,25 @@ static void config_load_file(const char* path) {
     g_cfg.d4xx_output_fps = std::clamp(g_cfg.d4xx_output_fps, 15, 60);
     g_cfg.d4xx_prediction_ms = std::clamp(
         g_cfg.d4xx_prediction_ms, 0.0f, 100.0f);
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+    std::transform(
+        g_cfg.d4xx_emitter_mode.begin(), g_cfg.d4xx_emitter_mode.end(),
+        g_cfg.d4xx_emitter_mode.begin(),
+        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    static constexpr const char* emitter_modes[] = {
+        "all-on", "all-off", "first-only", "second-only", "alternating",
+    };
+    if (std::find(
+            std::begin(emitter_modes), std::end(emitter_modes),
+            g_cfg.d4xx_emitter_mode) == std::end(emitter_modes)) {
+        log("config: unsupported D4xxPlacement.EmitterMode '%s'; using all-on",
+            g_cfg.d4xx_emitter_mode.c_str());
+        g_cfg.d4xx_emitter_mode = "all-on";
+    }
+    g_cfg.spike_smoothing = std::clamp(g_cfg.spike_smoothing, 0.0f, 1.0f);
+    g_cfg.spike_startup_timeout_ms = std::clamp(
+        g_cfg.spike_startup_timeout_ms, 5000, 120000);
+#endif
 #endif
     g_cfg.kinect_smoothing = std::clamp(g_cfg.kinect_smoothing, 0.0f, 1.0f);
     g_cfg.kinect_correction = std::clamp(g_cfg.kinect_correction, 0.0f, 1.0f);
@@ -577,6 +649,7 @@ static void config_load_file(const char* path) {
 #elif defined(ANYGEAR_BACKEND_D4XX)
     log("runtime config: D4xx depth+IR profile %d Hz, preview %d Hz, "
         "pool %d, primary=%d, required=%d, IR-index=%d, frame=%dx%d, "
+        "stall=%dms, reconnect=%dms, "
         "face-to-face=%d, auto-center-z=%d@%.2fm, "
         "offset=(%.2f,%.2f,%.2f), rotation=(%.1f,%.1f,%.1f)deg, "
         "smooth=%.2f, hold=%dms, output=%dHz, prediction=%.0fms, "
@@ -584,6 +657,7 @@ static void config_load_file(const char* path) {
         g_cfg.capture_fps, g_cfg.preview_fps, g_cfg.image_pool_max,
         g_cfg.d4xx_primary_device, g_cfg.d4xx_required_devices,
         g_cfg.d4xx_infrared_index, g_cfg.capture_w, g_cfg.capture_h,
+        g_cfg.d4xx_frame_stall_timeout_ms, g_cfg.d4xx_reconnect_delay_ms,
         (int)g_cfg.d4xx_face_to_face, (int)g_cfg.d4xx_auto_center_z,
         g_cfg.d4xx_stage_hip_z, g_cfg.d4xx_offset_x,
         g_cfg.d4xx_offset_y, g_cfg.d4xx_offset_z,
@@ -592,6 +666,22 @@ static void config_load_file(const char* path) {
         g_cfg.d4xx_smoothing, g_cfg.d4xx_body_hold_ms,
         g_cfg.d4xx_output_fps, g_cfg.d4xx_prediction_ms,
         sizeof(ParsedBody));
+#elif defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+    log("runtime config: D4xx/SPiKE depth-only profile %d Hz, "
+        "devices=%d, frame=%dx%d, stall=%dms, reconnect=%dms, emitter=%s, "
+        "face-to-face=%d, "
+        "auto-center-z=%d@%.2fm, smooth=%.2f, hold=%dms, "
+        "output=%dHz, prediction=%.0fms, worker-timeout=%dms, "
+        "ParsedBody=%zu bytes",
+        g_cfg.capture_fps, g_cfg.d4xx_required_devices,
+        g_cfg.capture_w, g_cfg.capture_h,
+        g_cfg.d4xx_frame_stall_timeout_ms, g_cfg.d4xx_reconnect_delay_ms,
+        g_cfg.d4xx_emitter_mode.c_str(),
+        (int)g_cfg.d4xx_face_to_face,
+        (int)g_cfg.d4xx_auto_center_z, g_cfg.d4xx_stage_hip_z,
+        g_cfg.spike_smoothing, g_cfg.d4xx_body_hold_ms,
+        g_cfg.d4xx_output_fps, g_cfg.d4xx_prediction_ms,
+        g_cfg.spike_startup_timeout_ms, sizeof(ParsedBody));
 #else
     log("runtime config: MediaPipe webcam profile %d Hz, preview %d Hz, "
         "pool %d, camera=%d, frame=%dx%d, ParsedBody=%zu bytes",
@@ -726,7 +816,7 @@ static std::atomic<bool> g_poseOk{false};
 // ------------------------------------------------------------ backend ----
 // Release targets select one sensor at compile time. An explicitly selected
 // backend never falls through to another physical device on failure.
-enum class Backend { Webcam, Kinect, SteamVr, D4xx };
+enum class Backend { Webcam, Kinect, SteamVr, D4xx, D4xxSpike };
 
 static Backend backend_from_env() {
 #if defined(ANYGEAR_BACKEND_KINECT)
@@ -737,6 +827,8 @@ static Backend backend_from_env() {
     return Backend::SteamVr;
 #elif defined(ANYGEAR_BACKEND_D4XX)
     return Backend::D4xx;
+#elif defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+    return Backend::D4xxSpike;
 #else
     const char* e = std::getenv("VP4U_BACKEND");
     if (!e) return Backend::Webcam;
@@ -745,6 +837,7 @@ static Backend backend_from_env() {
     if (v == "kinect") return Backend::Kinect;
     if (v == "steamvr") return Backend::SteamVr;
     if (v == "d4xx") return Backend::D4xx;
+    if (v == "d4xx-spike") return Backend::D4xxSpike;
     return Backend::Webcam;
 #endif
 }
@@ -758,9 +851,10 @@ static Backend backend() {
 static std::shared_ptr<KinectSource> g_kinect;
 static std::shared_ptr<SteamVrSource> g_steamvr;
 static std::shared_ptr<D4xxSource> g_d4xx;
+static std::shared_ptr<SpikeSource> g_spike;
 
 static bool hardware_skeleton_active() {
-    return g_kinect != nullptr || g_steamvr != nullptr;
+    return g_kinect != nullptr || g_steamvr != nullptr || g_spike != nullptr;
 }
 
 static bool hardware_has_color_stream() {
@@ -768,34 +862,43 @@ static bool hardware_has_color_stream() {
 }
 
 static bool hardware_wait_for_skeleton(PoseResult* out, uint64_t* generation,
-                                       int timeout_ms) {
+                                       int timeout_ms,
+                                       std::int64_t* source_time_ns = nullptr) {
     if (g_kinect) {
         return g_kinect->wait_for_skeleton(out, generation, timeout_ms);
     }
     if (g_steamvr) {
         return g_steamvr->wait_for_skeleton(out, generation, timeout_ms);
     }
+    if (g_spike) {
+        return g_spike->wait_for_skeleton(
+            out, generation, timeout_ms, source_time_ns);
+    }
     return false;
 }
 
 static const char* hardware_name() {
-    return g_kinect ? "Kinect" : (g_steamvr ? "SteamVR" : "hardware");
+    return g_kinect ? "Kinect" : (g_steamvr ? "SteamVR"
+        : (g_spike ? "D4xx/SPiKE" : "hardware"));
 }
 
 static int hardware_body_hold_ms() {
-    return g_kinect ? g_cfg.kinect_body_hold_ms : g_cfg.steamvr_body_hold_ms;
+    return g_kinect ? g_cfg.kinect_body_hold_ms
+        : (g_spike ? g_cfg.d4xx_body_hold_ms : g_cfg.steamvr_body_hold_ms);
 }
 
 // Unified frame-source access for the worker loops.
 static int src_native_width() {
     if (g_kinect) return g_kinect->native_width();
     if (g_steamvr) return g_steamvr->native_width();
+    if (g_spike) return g_spike->native_width();
     if (g_d4xx) return g_d4xx->native_width();
     return g_cam ? g_cam->native_width() : 0;
 }
 static int src_native_height() {
     if (g_kinect) return g_kinect->native_height();
     if (g_steamvr) return g_steamvr->native_height();
+    if (g_spike) return g_spike->native_height();
     if (g_d4xx) return g_d4xx->native_height();
     return g_cam ? g_cam->native_height() : 0;
 }
@@ -853,7 +956,7 @@ static void paths_default(std::wstring* runtime_dir, std::string* model_path) {
     std::string dir = dll_dir_w();
     const std::string dependency_dir = dir +
         (backend() == Backend::D4xx
-            ? "\\dance_around_anygear_d4xx"
+            ? "\\dance_around_anygear_d4xx_mediapipe_experimental"
             : "\\dance_around_anygear_webcam");
     *runtime_dir = g_cfg.runtime_dir.empty()
         ? std::wstring(dependency_dir.begin(), dependency_dir.end())
@@ -865,10 +968,73 @@ static void paths_default(std::wstring* runtime_dir, std::string* model_path) {
 
 static std::wstring d4xx_runtime_default() {
     const std::string path = g_cfg.d4xx_runtime_path.empty()
-        ? dll_dir_w() + "\\dance_around_anygear_d4xx\\realsense2.dll"
+        ? dll_dir_w() +
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+            "\\dance_around_anygear_d4xx_spike\\realsense2.dll"
+#else
+            "\\dance_around_anygear_d4xx_mediapipe_experimental\\realsense2.dll"
+#endif
         : g_cfg.d4xx_runtime_path;
     return std::wstring(path.begin(), path.end());
 }
+
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+static std::filesystem::path spike_dependency_directory() {
+    return std::filesystem::path(dll_dir_w()) /
+        "dance_around_anygear_d4xx_spike";
+}
+
+static std::filesystem::path spike_configured_path(
+    const std::string& configured,
+    const std::filesystem::path& fallback) {
+    if (configured.empty()) return fallback;
+    std::filesystem::path result(configured);
+    return result.is_absolute()
+        ? result
+        : std::filesystem::path(dll_dir_w()) / result;
+}
+
+static SpikeTrackingOptions spike_tracking_options() {
+    const std::filesystem::path dependency = spike_dependency_directory();
+    SpikeTrackingOptions options;
+    options.worker_executable = spike_configured_path(
+        g_cfg.spike_worker_executable,
+        dependency / "worker" /
+            "dance_around_anygear_spike_worker.exe").wstring();
+    if (g_cfg.spike_python_module) {
+        options.worker_arguments.insert(
+            options.worker_arguments.end(), {L"-m", L"anygear_spike.worker"});
+    }
+    const auto add_path = [&](const wchar_t* name,
+                              const std::filesystem::path& path) {
+        options.worker_arguments.push_back(name);
+        options.worker_arguments.push_back(path.wstring());
+    };
+    add_path(L"--model", spike_configured_path(
+        g_cfg.spike_model_path,
+        dependency / "spike-itop-side-primary-fp16.onnx"));
+    add_path(L"--runtime-config",
+        std::filesystem::path(dll_dir_w()) /
+            "dance_around_anygear_d4xx_spike.json");
+    add_path(L"--log", spike_configured_path(
+        g_cfg.spike_worker_log_path, dependency / "worker.log"));
+    options.worker_startup_timeout_ms =
+        static_cast<std::uint32_t>(g_cfg.spike_startup_timeout_ms);
+    options.face_to_face = g_cfg.d4xx_face_to_face;
+    options.auto_center_z = g_cfg.d4xx_auto_center_z;
+    options.stage_hip_z = g_cfg.d4xx_stage_hip_z;
+    options.mirror_center_x = g_cfg.d4xx_mirror_center_x;
+    options.offset_x = g_cfg.d4xx_offset_x;
+    options.offset_y = g_cfg.d4xx_offset_y;
+    options.offset_z = g_cfg.d4xx_offset_z;
+    options.pitch_degrees = g_cfg.d4xx_pitch_degrees;
+    options.yaw_degrees = g_cfg.d4xx_yaw_degrees;
+    options.roll_degrees = g_cfg.d4xx_roll_degrees;
+    options.smoothing = g_cfg.spike_smoothing;
+    options.log = [](void*, const char* message) { log("%s", message); };
+    return options;
+}
+#endif
 
 static std::wstring steamvr_runtime_default() {
     const std::string directory = g_cfg.steamvr_runtime_dir.empty()
@@ -883,8 +1049,7 @@ static void map_pose_to_body(const PoseResult& pr, ParsedBody& body) {
     body._padding = 0;
     body.TrackingId = 1;
 
-    auto vis_of = [&](int mp) { return pr.vis[mp]; };
-    auto st_of = [&](int mp) { return vis_of(mp) > 0.5f ? 2 : 1; };
+    auto st_of = [&](int mp) { return pose_tracking_state(pr, mp); };
     auto set = [&](int jt, float x, float y, float z, int st) {
         Joint& j = body.JointData[jt];
         j.TrackingState = st;
@@ -1121,77 +1286,6 @@ struct D4xxInferenceState {
     uint64_t detections = 0;
 };
 
-static float d4xx_prediction_speed_limit(int joint) {
-    switch (joint) {
-    case JT_ElbowLeft:
-    case JT_WristLeft:
-    case JT_HandLeft:
-    case JT_ElbowRight:
-    case JT_WristRight:
-    case JT_HandRight:
-    case JT_KneeLeft:
-    case JT_AnkleLeft:
-    case JT_FootLeft:
-    case JT_KneeRight:
-    case JT_AnkleRight:
-    case JT_FootRight:
-    case JT_HandTipLeft:
-    case JT_ThumbLeft:
-    case JT_HandTipRight:
-    case JT_ThumbRight:
-        return 8.0f;
-    default:
-        return 4.0f;
-    }
-}
-
-static void predict_d4xx_body(ParsedBody* output,
-                              const ParsedBody& previous,
-                              const ParsedBody& latest,
-                              uint64_t previous_sample_ms,
-                              uint64_t latest_sample_ms,
-                              uint64_t now_ms) {
-    *output = latest;
-    if (latest_sample_ms <= previous_sample_ms) return;
-    const float sample_seconds = static_cast<float>(
-        latest_sample_ms - previous_sample_ms) / 1000.0f;
-    if (sample_seconds < 0.015f || sample_seconds > 0.250f) return;
-
-    // Account for capture + inference age and look a small configurable amount
-    // ahead. A hard 100 ms ceiling prevents a missed inference from launching
-    // an extremity across the stage.
-    const float horizon_seconds = std::min(
-        0.100f,
-        (static_cast<float>(now_ms - latest_sample_ms) +
-         g_cfg.d4xx_prediction_ms) / 1000.0f);
-    for (int joint = 0; joint < kJointCount; ++joint) {
-        const Joint& old_joint = previous.JointData[joint];
-        const Joint& new_joint = latest.JointData[joint];
-        Joint& predicted = output->JointData[joint];
-        if (old_joint.TrackingState == 0 || new_joint.TrackingState == 0) {
-            continue;
-        }
-        float velocity[3] = {
-            (new_joint.PositionX - old_joint.PositionX) / sample_seconds,
-            (new_joint.PositionY - old_joint.PositionY) / sample_seconds,
-            (new_joint.PositionZ - old_joint.PositionZ) / sample_seconds,
-        };
-        const float magnitude = std::sqrt(
-            velocity[0] * velocity[0] + velocity[1] * velocity[1] +
-            velocity[2] * velocity[2]);
-        const float limit = d4xx_prediction_speed_limit(joint);
-        if (magnitude > limit && magnitude > 0.0f) {
-            const float scale = limit / magnitude;
-            velocity[0] *= scale;
-            velocity[1] *= scale;
-            velocity[2] *= scale;
-        }
-        predicted.PositionX += velocity[0] * horizon_seconds;
-        predicted.PositionY += velocity[1] * horizon_seconds;
-        predicted.PositionZ += velocity[2] * horizon_seconds;
-    }
-}
-
 static void d4xx_analysis_loop(OnPoseFrameCallback cb, void* ctx) {
     D4xxInferenceState state;
     std::thread inference([&state] {
@@ -1266,10 +1360,10 @@ static void d4xx_analysis_loop(OnPoseFrameCallback cb, void* ctx) {
                     static_cast<uint64_t>(g_cfg.d4xx_body_hold_ms);
             if (have_body) {
                 if (state.have_previous) {
-                    predict_d4xx_body(
+                    predict_body(
                         &body, state.previous, state.latest,
                         state.previous_sample_ms, state.latest_sample_ms,
-                        now_ms);
+                        now_ms, g_cfg.d4xx_prediction_ms);
                 } else {
                     body = state.latest;
                 }
@@ -1330,10 +1424,11 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
     const bool hardware = hardware_skeleton_active();
     log("runtime 5/5: analysis started (%s)", g_kinect ? "kinect NUI skeleton"
         : (g_steamvr ? "SteamVR tracked poses"
+        : (g_spike ? "D4xx depth + SPiKE worker"
                      : (g_poseOk ? (g_d4xx
-                                      ? "D4xx IR + MediaPipe + metric depth"
-                                      : "MediaPipe Pose Landmarker")
-                                 : "MediaPipe unavailable (empty frames)")));
+                                       ? "D4xx IR + MediaPipe + metric depth"
+                                       : "MediaPipe Pose Landmarker")
+                                  : "MediaPipe unavailable (empty frames)"))));
     if (g_d4xx && !hardware) {
         d4xx_analysis_loop(cb, ctx);
         return;
@@ -1346,8 +1441,16 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
     uint64_t last_detected_ms = 0;
     uint64_t hardware_generation = 0;
     bool last_hardware_valid = false;
+    bool spike_last_worker_valid = false;
+    ParsedBody spike_previous_body{};
+    ParsedBody spike_latest_body{};
+    double spike_previous_sample_ms = 0.0;
+    double spike_latest_sample_ms = 0.0;
+    bool spike_have_previous = false;
+    bool spike_have_latest = false;
     bool last_webcam_valid = false;
     auto next_webcam_tick = std::chrono::steady_clock::now();
+    auto next_spike_tick = std::chrono::steady_clock::now();
     static const uint8_t black_pixel[3] = {0, 0, 0};
     while (!g_analysisWk.stop) {
         int w = hardware ? src_native_width() : g_cfg.capture_w;
@@ -1356,24 +1459,76 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
         if (h <= 0) h = 480;
 
         bool detected = false;
+        bool hardware_sample_received = false;
+        std::int64_t hardware_source_time_ns = 0;
         if (hardware) {
-            // Hardware poses arrive independently of RGB. Wait for a new
-            // source generation rather than resubmitting a stale pose.
+            // SPiKE inference is intentionally slower than the game's pose
+            // stream. Poll its latest generation without blocking and submit
+            // the retained body at the configured 30 Hz callback cadence.
+            // Native skeleton backends remain generation-driven.
             PoseResult pr;
             const bool skeleton_streaming = hardware_wait_for_skeleton(
-                &pr, &hardware_generation, 100);
-            if (!skeleton_streaming) {
+                &pr, &hardware_generation, g_spike ? 0 : 100,
+                &hardware_source_time_ns);
+            hardware_sample_received = skeleton_streaming;
+            if (g_spike && skeleton_streaming) {
+                spike_last_worker_valid = pr.valid;
+            }
+            if (!skeleton_streaming && !g_spike) {
                 if (g_analysisWk.stop) break;
                 continue;
             }
             if (skeleton_streaming && pr.valid) {
                 if (g_kinect) transform_kinect_pose_to_stage(pr);
-                map_pose_to_body(pr, body);
+                ParsedBody measured_body{};
+                map_pose_to_body(pr, measured_body);
+                if (g_spike && hardware_source_time_ns > 0) {
+                    const double sample_ms =
+                        static_cast<double>(hardware_source_time_ns) / 1.0e6;
+                    const bool time_advanced = !spike_have_latest ||
+                        sample_ms > spike_latest_sample_ms + 0.001;
+                    if (time_advanced) {
+                        const bool continuous = spike_have_latest &&
+                            sample_ms - spike_latest_sample_ms <= 250.0;
+                        if (continuous) {
+                            spike_previous_body = spike_latest_body;
+                            spike_previous_sample_ms = spike_latest_sample_ms;
+                            spike_have_previous = true;
+                        } else {
+                            spike_have_previous = false;
+                        }
+                        spike_latest_body = measured_body;
+                        spike_latest_sample_ms = sample_ms;
+                        spike_have_latest = true;
+                    } else if (sample_ms < spike_latest_sample_ms - 0.001) {
+                        // A rebuilt input source must not inherit old velocity.
+                        spike_latest_body = measured_body;
+                        spike_latest_sample_ms = sample_ms;
+                        spike_have_latest = true;
+                        spike_have_previous = false;
+                    }
+                } else {
+                    body = measured_body;
+                }
                 detected = true;
             }
 
+            if (g_spike && spike_have_latest) {
+                body = spike_latest_body;
+                if (spike_have_previous) {
+                    const double callback_time_ms =
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+                    predict_body(
+                        &body, spike_previous_body, spike_latest_body,
+                        spike_previous_sample_ms, spike_latest_sample_ms,
+                        callback_time_ms, g_cfg.d4xx_prediction_ms);
+                }
+            }
+
             const bool valid_now = skeleton_streaming && pr.valid;
-            if (valid_now != last_hardware_valid) {
+            if (skeleton_streaming && valid_now != last_hardware_valid) {
                 if (valid_now) {
                     const float hip_x = (pr.world[MP_LeftHip][0] +
                                          pr.world[MP_RightHip][0]) * 0.5f;
@@ -1415,10 +1570,17 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
                 body.TrackingState != 0 && last_detected_ms != 0 &&
                 now_ms - last_detected_ms <=
                     (uint64_t)g_cfg.d4xx_body_hold_ms;
-            if (d4xx_grace) {
+            const bool spike_resample = g_spike &&
+                !hardware_sample_received &&
+                spike_last_worker_valid &&
+                body.TrackingState != 0 && last_detected_ms != 0 &&
+                now_ms - last_detected_ms <=
+                    (uint64_t)hardware_body_hold_ms();
+            if (d4xx_grace || spike_resample) {
                 // The IR pose detector can briefly return no result on a valid
-                // video track. Retain the last metric pose for a bounded window
-                // so the game's consecutive-frame calibration is not reset.
+                // video track. SPiKE also retains its latest measured pose
+                // between model generations. Keep joint states intact for
+                // these expected resampling frames.
             } else if (hardware_grace ||
                        (!hardware && miss <= 5 && body.TrackingState != 0)) {
                 // Bridge short hardware identity/occlusion gaps with the last stable
@@ -1432,6 +1594,11 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
                 }
             } else {
                 make_empty_body(body, 0);
+                if (g_spike) {
+                    spike_have_latest = false;
+                    spike_have_previous = false;
+                    spike_last_worker_valid = false;
+                }
             }
         }
         if (!hardware) {
@@ -1478,7 +1645,15 @@ static void analysis_loop(OnPoseFrameCallback cb, void* ctx) {
            main_img, sub_img);
         frame_no++;
 
-        if (!hardware) {
+        if (g_spike) {
+            // Submit immediately after sampling. Sleeping before the callback
+            // adds one full output period to every measured pose.
+            next_spike_tick += std::chrono::microseconds(
+                1000000 / std::max(1, g_cfg.d4xx_output_fps));
+            const auto now = std::chrono::steady_clock::now();
+            if (next_spike_tick < now) next_spike_tick = now;
+            sleep_worker_until(g_analysisWk, next_spike_tick);
+        } else if (!hardware) {
             // Webcam inference has no hardware-frame wait, so retain a precise
             // bounded cadence without the old 4 ms rounding oversleep.
             next_webcam_tick += std::chrono::microseconds(
@@ -1528,7 +1703,9 @@ static intptr_t t_Initialize(void) {
     g_initialized = true;
     const char* name = backend() == Backend::Kinect ? "kinect"
         : (backend() == Backend::SteamVr ? "steamvr"
-            : (backend() == Backend::D4xx ? "d4xx" : "webcam"));
+            : (backend() == Backend::D4xx ? "d4xx"
+                : (backend() == Backend::D4xxSpike
+                    ? "d4xx-spike" : "webcam")));
     log("runtime 3/5: initialized VP4U shim (backend=%s)", name);
     return 1;
 }
@@ -1539,6 +1716,7 @@ static void t_Shutdown(void) {
     g_analysisWk.join();
     g_kinect.reset();
     g_steamvr.reset();
+    g_spike.reset();
     g_d4xx.reset();
     g_cam.reset();
     if (g_poseOk) { g_pose.shutdown(); g_poseOk = false; }
@@ -1599,8 +1777,9 @@ static bool t_OpenRealSense(void) {
         log("runtime 4/5: SteamVR runtime FAILED: %s", error.c_str());
         return false;
     }
-    if (backend() == Backend::D4xx) {
-        log("runtime 4/5: opening D4xx depth+infrared devices");
+    if (backend() == Backend::D4xx || backend() == Backend::D4xxSpike) {
+        log("runtime 4/5: opening D4xx depth%s devices",
+            backend() == Backend::D4xxSpike ? "-only" : "+infrared");
         D4xxOptions options;
         options.runtime_path = d4xx_runtime_default();
         options.width = g_cfg.capture_w;
@@ -1610,6 +1789,8 @@ static bool t_OpenRealSense(void) {
         options.primary_serial = g_cfg.d4xx_primary_serial;
         options.required_devices = g_cfg.d4xx_required_devices;
         options.infrared_index = g_cfg.d4xx_infrared_index;
+        options.frame_stall_timeout_ms = g_cfg.d4xx_frame_stall_timeout_ms;
+        options.reconnect_delay_ms = g_cfg.d4xx_reconnect_delay_ms;
         options.depth_scale_m = g_cfg.d4xx_depth_scale_m;
         options.mirror_center_x = g_cfg.d4xx_mirror_center_x;
         options.face_to_face = g_cfg.d4xx_face_to_face;
@@ -1622,11 +1803,45 @@ static bool t_OpenRealSense(void) {
         options.yaw_degrees = g_cfg.d4xx_yaw_degrees;
         options.roll_degrees = g_cfg.d4xx_roll_degrees;
         options.smoothing = g_cfg.d4xx_smoothing;
+        if (backend() == Backend::D4xxSpike) {
+            options.align_depth_to_infrared = false;
+            options.enable_infrared = false;
+            options.emitter_enabled_by_device = {1, 1};
+            options.emitter_on_off_by_device = {0, 0};
+            if (g_cfg.d4xx_emitter_mode == "all-off") {
+                options.emitter_enabled_by_device = {0, 0};
+            } else if (g_cfg.d4xx_emitter_mode == "first-only") {
+                options.emitter_enabled_by_device = {1, 0};
+            } else if (g_cfg.d4xx_emitter_mode == "second-only") {
+                options.emitter_enabled_by_device = {0, 1};
+            } else if (g_cfg.d4xx_emitter_mode == "alternating") {
+                options.emitter_on_off_by_device = {1, 1};
+            }
+            options.visual_preset_by_device = {4, 4};
+        }
         options.log = [](void*, const char* message) { log("%s", message); };
         std::string error;
         g_d4xx = D4xxSource::acquire(options, &error);
         const bool ready = g_d4xx && g_d4xx->wait_until_ready(8000);
         if (ready) {
+            if (backend() == Backend::D4xxSpike) {
+#if defined(ANYGEAR_BACKEND_D4XX_SPIKE)
+                SpikeTrackingOptions spike_options =
+                    spike_tracking_options();
+                g_spike = SpikeSource::acquire(
+                    g_d4xx, spike_options, &error);
+                if (!g_spike) {
+                    log("runtime 4/5: SPiKE worker FAILED: %s",
+                        error.c_str());
+                    g_d4xx.reset();
+                    return false;
+                }
+                log("runtime 4/5: D4xx/SPiKE ready (%d/%d devices, "
+                    "native Z16, no RGB)", g_d4xx->active_device_count(),
+                    g_d4xx->device_count());
+                return true;
+#endif
+            }
             log("runtime 4/5: D4xx ready (%d/%d devices, IR->BGR24, "
                 "depth->3D)", g_d4xx->active_device_count(),
                 g_d4xx->device_count());
@@ -1677,12 +1892,14 @@ static bool t_TryRebuildRealSenseFilters(void) {
 
 static int init_pose_engine(const char* productKey, const char* mode) {
     (void)productKey;
-    if (backend() == Backend::Kinect || backend() == Backend::SteamVr) {
+    if (backend() == Backend::Kinect || backend() == Backend::SteamVr ||
+        backend() == Backend::D4xxSpike) {
         // The game initializes VisionPose before it calls OpenRealSense, so
         // the hardware source is still null here. Select by the configured
         // backend to avoid creating an unused MediaPipe thread pool.
         log("InitVisionPose%s: skipped (%s backend supplies tracked poses)",
-            mode, backend() == Backend::Kinect ? "kinect" : "steamvr");
+            mode, backend() == Backend::Kinect ? "kinect"
+                : (backend() == Backend::SteamVr ? "steamvr" : "d4xx-spike"));
         return 1;
     }
     std::wstring runtime_dir;

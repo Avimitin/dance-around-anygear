@@ -5,6 +5,11 @@ depth modules against the existing native pose path. It is deliberately
 step-by-step: do not substitute a newer TensorRT release, and do not copy files
 into the game directory until every prerequisite passes the checks below.
 
+For the independent depth-only model that does not use this NVIDIA/native pose
+stack, see the
+[D4xx/SPiKE research backend](realsense-d4xx-spike.md). The two paths are kept
+separate so their evidence and runtime requirements cannot be confused.
+
 The D430 path uses depth and infrared only. A color sensor and RGB frames are
 not required. The NVIDIA dependencies run the existing pose model; they are
 unrelated to RealSense capture.

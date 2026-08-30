@@ -1,0 +1,89 @@
+{
+  "SchemaVersion": 1,
+  "D4xxPlacement": {
+    "PrimaryDevice": 0,
+    "PrimarySerial": "",
+    "RequiredDevices": 2,
+    "FrameStallTimeoutMs": 1500,
+    "ReconnectDelayMs": 500,
+    "EmitterMode": "first-only",
+    "FaceToFace": true,
+    "AutoCenterZ": true,
+    "StageHipZ": 2.3,
+    "MirrorCenterX": 0.55,
+    "OffsetX": 0.0,
+    "OffsetY": 0.0,
+    "OffsetZ": 0.0,
+    "PitchDegrees": 0.0,
+    "YawDegrees": 0.0,
+    "RollDegrees": 0.0,
+    "Smoothing": 1.0,
+    "BodyHoldMs": 100,
+    "OutputFps": 60,
+    "PredictionMs": 0.0
+  },
+  "Worker": {
+    "Executable": "",
+    "PythonModule": false,
+    "Model": "",
+    "Log": "",
+    "StartupTimeoutMs": 45000
+  },
+  "Runtime": {
+    "InferenceFps": 30,
+    "PointCount": 4096,
+    "FramesPerClip": 3,
+    "DirectMlDeviceIndex": 0,
+    "WarmupRuns": 3,
+    "SecondaryEveryN": 3
+  },
+  "Isolation": {
+    "MinimumX": -1.4,
+    "MaximumX": 1.4,
+    "MinimumY": -1.8,
+    "MaximumY": 1.3,
+    "MinimumZ": 0.45,
+    "MaximumZ": 4.5,
+    "VoxelSize": 0.075,
+    "PixelStride": 3,
+    "MinimumComponentPoints": 10,
+    "MinimumPersonPoints": 500,
+    "ClusterOffset": 0.2,
+    "MinimumPersonHeight": 0.65,
+    "MinimumAcquisitionHeight": 1.15,
+    "MaximumPersonHeight": 2.5,
+    "MaximumPersonWidth": 2.5,
+    "MaximumPersonDepth": 1.8,
+    "BackgroundCalibrationFrames": 45,
+    "BackgroundMargin": 0.1,
+    "DropoutHoldMs": 100
+  },
+  "Fusion": {
+    "Mode": "primary",
+    "PrimaryCamera": 0,
+    "AgreementDistance": 0.22,
+    "SevereDisagreement": 0.45,
+    "TrackedConfidence": 0.55,
+    "InferredConfidence": 0.15,
+    "Cameras": [
+      {
+        "Serial": "",
+        "CameraToStage": [
+          1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0
+        ]
+      },
+      {
+        "Serial": "",
+        "CameraToStage": [
+          1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0
+        ]
+      }
+    ]
+  }
+}

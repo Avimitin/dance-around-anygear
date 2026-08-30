@@ -25,13 +25,48 @@ constexpr int kMpLandmarkCount = 33;
 
 struct PoseResult {
     bool  valid = false;        // a person was detected this frame
+    // Hardware/model backends may supply an exact per-landmark 0/1/2 state.
+    // MediaPipe and existing hardware paths retain visibility-based mapping.
+    bool  has_tracking_state = false;
     float confidence = 0.f;     // mean visibility of key joints
     // Stage-space meters for each MediaPipe landmark (x right, y up, z depth).
     float world[kMpLandmarkCount][3] {};
     // Source-frame pixel coordinates (debug / future 2D output).
     float pixel[kMpLandmarkCount][2] {};
     float vis[kMpLandmarkCount] {};
+    std::uint8_t tracking_state[kMpLandmarkCount] {};
 };
+
+inline int pose_tracking_state(const PoseResult& pose, int landmark) {
+    if (pose.has_tracking_state) {
+        const int state = pose.tracking_state[landmark];
+        return state > 2 ? 2 : state;
+    }
+    return pose.vis[landmark] > 0.5f ? 2 : 1;
+}
+
+inline void smooth_pose_landmark(PoseResult* pose, int landmark, float alpha,
+                                 float previous[3], bool* have_previous) {
+    float* current = pose->world[landmark];
+    if (pose->has_tracking_state && pose->tracking_state[landmark] == 0) {
+        if (*have_previous) {
+            for (int component = 0; component < 3; ++component) {
+                current[component] = previous[component];
+            }
+        }
+        return;
+    }
+    if (*have_previous) {
+        for (int component = 0; component < 3; ++component) {
+            current[component] = alpha * current[component] +
+                (1.0f - alpha) * previous[component];
+        }
+    }
+    for (int component = 0; component < 3; ++component) {
+        previous[component] = current[component];
+    }
+    *have_previous = true;
+}
 
 // Simple stage calibration: where the detected hip center lands on the stage,
 // and the assumed torso (shoulder-mid to hip-mid) length in meters.

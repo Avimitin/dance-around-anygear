@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>D4xx / SPiKE 实时预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --background: #070b13;
+      --surface: #111827;
+      --surface-2: #172033;
+      --border: #2b3850;
+      --text: #e7edf7;
+      --muted: #9aa9bf;
+      --blue: #42a5f5;
+      --green: #39d98a;
+      --orange: #ffb547;
+      --red: #ff5c72;
+      --focus: #8ec5ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--background);
+      color: var(--text);
+      font-family: Inter, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      background: rgba(7, 11, 19, 0.94);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+    }
+    h1 { margin: 0; font-size: 20px; font-weight: 600; }
+    h2 { margin: 0; font-size: 17px; font-weight: 600; }
+    button {
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--surface-2);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--blue); }
+    button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    button[aria-pressed="true"] {
+      border-color: var(--blue);
+      background: #15375c;
+    }
+    button.danger:hover { border-color: var(--red); color: #ffd6dc; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .toolbar-label { color: var(--muted); font-size: 13px; }
+    main { padding: 16px 20px 28px; }
+    .notice {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 16px;
+      padding: 10px 13px;
+      border-left: 4px solid var(--blue);
+      background: var(--surface);
+      color: var(--text);
+    }
+    .notice strong { font-weight: 600; }
+    .notice small { color: var(--muted); white-space: nowrap; }
+    .camera-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .camera {
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--surface);
+    }
+    .camera-heading {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .camera-title { display: flex; gap: 9px; align-items: baseline; min-width: 0; }
+    .serial { color: var(--muted); font-family: Consolas, monospace; font-size: 13px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 25px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #26344b;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .badge.ok { background: #123c2d; color: #96f1c3; }
+    .badge.warn { background: #493515; color: #ffd28c; }
+    .visuals { display: grid; grid-template-columns: 1fr; gap: 1px; background: var(--border); }
+    figure { margin: 0; padding: 10px; background: var(--surface); }
+    figcaption {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 7px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border-radius: 5px;
+      background: #050912;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border-top: 1px solid var(--border);
+    }
+    .metric { min-width: 0; padding: 9px 10px; background: var(--surface-2); }
+    .metric-label { display: block; color: var(--muted); font-size: 11px; }
+    .metric-value {
+      display: block;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+      font-size: 13px;
+    }
+    .legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .swatch { display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 50%; }
+    .swatch.points { background: var(--blue); }
+    .swatch.tracked { background: var(--green); }
+    .swatch.inferred { background: var(--orange); }
+    .swatch.unsupported { background: var(--red); }
+    @media (max-width: 1100px) {
+      .camera-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      header { position: static; align-items: flex-start; flex-direction: column; }
+      main { padding: 12px; }
+      .notice { align-items: flex-start; flex-direction: column; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>D4xx / SPiKE 实时预览</h1>
+      <div class="toolbar-label" id="summary">正在连接本机采集服务…</div>
+    </div>
+    <div class="toolbar" aria-label="预览控制">
+      <span class="toolbar-label">推理：</span>
+      <button type="button" data-mode="camera-0" aria-pressed="false">仅 0 号</button>
+      <button type="button" data-mode="camera-1" aria-pressed="false">仅 1 号</button>
+      <button type="button" data-mode="dual" aria-pressed="true">双路交替</button>
+      <button type="button" id="recalibrate">重采空场</button>
+      <button type="button" class="danger" id="stop">停止</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="notice" role="status" aria-live="polite">
+      <strong id="message">等待服务状态</strong>
+      <small id="pipeline">推理 -- Hz · -- ms</small>
+    </div>
+
+    <section class="camera-grid" aria-label="两路摄像头">
+      <article class="camera" id="camera-0">
+        <div class="camera-heading">
+          <div class="camera-title"><h2>Camera 0</h2><span class="serial" id="serial-0">--</span></div>
+          <span class="badge" id="status-0">等待深度帧</span>
+        </div>
+        <div class="visuals">
+          <figure>
+            <figcaption><span>原始深度 + 预测骨架</span><span>完整取景检查</span></figcaption>
+            <canvas id="depth-0" aria-label="0 号摄像头深度图与骨架"></canvas>
+          </figure>
+          <figure>
+            <figcaption><span>隔离点云 + 预测骨架</span><span>左：X/Y　右：Z/Y</span></figcaption>
+            <canvas id="cloud-0" aria-label="0 号摄像头点云正视图和侧视图"></canvas>
+          </figure>
+        </div>
+        <div class="metrics">
+          <div class="metric"><span class="metric-label">采集</span><span class="metric-value" id="fps-0">-- FPS</span></div>
+          <div class="metric"><span class="metric-label">前景点</span><span class="metric-value" id="points-0">--</span></div>
+          <div class="metric"><span class="metric-label">人体范围 X/Y/Z</span><span class="metric-value" id="extent-0">-- m</span></div>
+          <div class="metric"><span class="metric-label">推理 / 跳过帧</span><span class="metric-value" id="infer-0">--</span></div>
+        </div>
+      </article>
+
+      <article class="camera" id="camera-1">
+        <div class="camera-heading">
+          <div class="camera-title"><h2>Camera 1</h2><span class="serial" id="serial-1">--</span></div>
+          <span class="badge" id="status-1">等待深度帧</span>
+        </div>
+        <div class="visuals">
+          <figure>
+            <figcaption><span>原始深度 + 预测骨架</span><span>完整取景检查</span></figcaption>
+            <canvas id="depth-1" aria-label="1 号摄像头深度图与骨架"></canvas>
+          </figure>
+          <figure>
+            <figcaption><span>隔离点云 + 预测骨架</span><span>左：X/Y　右：Z/Y</span></figcaption>
+            <canvas id="cloud-1" aria-label="1 号摄像头点云正视图和侧视图"></canvas>
+          </figure>
+        </div>
+        <div class="metrics">
+          <div class="metric"><span class="metric-label">采集</span><span class="metric-value" id="fps-1">-- FPS</span></div>
+          <div class="metric"><span class="metric-label">前景点</span><span class="metric-value" id="points-1">--</span></div>
+          <div class="metric"><span class="metric-label">人体范围 X/Y/Z</span><span class="metric-value" id="extent-1">-- m</span></div>
+          <div class="metric"><span class="metric-label">推理 / 跳过帧</span><span class="metric-value" id="infer-1">--</span></div>
+        </div>
+      </article>
+    </section>
+
+    <div class="legend" aria-label="颜色说明">
+      <span><i class="swatch points"></i>隔离点云</span>
+      <span><i class="swatch tracked"></i>点云支持充分</span>
+      <span><i class="swatch inferred"></i>支持较弱</span>
+      <span><i class="swatch unsupported"></i>缺少点云支持</span>
+    </div>
+  </main>
+
+  <script>
+    "use strict";
+
+    const bones = [
+      [0, 1], [1, 2], [1, 3], [2, 4], [4, 6], [3, 5], [5, 7],
+      [1, 8], [8, 9], [8, 10], [9, 11], [11, 13], [10, 12], [12, 14]
+    ];
+    const colors = {
+      background: "#050912", grid: "#243044", text: "#9aa9bf",
+      points: "#42a5f5", tracked: "#39d98a", inferred: "#ffb547",
+      unsupported: "#ff5c72", skeletonShadow: "rgba(0,0,0,.75)"
+    };
+
+    function post(path, value = {}) {
+      return fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(value)
+      });
+    }
+
+    document.querySelectorAll("[data-mode]").forEach(button => {
+      button.addEventListener("click", async () => {
+        await post("/api/mode", { mode: button.dataset.mode });
+      });
+    });
+    document.getElementById("recalibrate").addEventListener("click", async () => {
+      if (confirm("请先离开两台摄像头的视野。现在重新采集空场吗？")) {
+        await post("/api/recalibrate");
+      }
+    });
+    document.getElementById("stop").addEventListener("click", async () => {
+      await post("/api/stop");
+      document.getElementById("message").textContent = "服务正在停止";
+    });
+
+    function fitCanvas(canvas) {
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(320, Math.round(canvas.clientWidth * ratio));
+      const height = Math.max(180, Math.round(canvas.clientHeight * ratio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      return canvas.getContext("2d");
+    }
+
+    function bytesFromBase64(value) {
+      const binary = atob(value || "");
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    }
+
+    function decodeDepth(value) {
+      const bytes = bytesFromBase64(value);
+      const data = new Uint16Array(bytes.length / 2);
+      const view = new DataView(bytes.buffer);
+      for (let index = 0; index < data.length; index += 1) {
+        data[index] = view.getUint16(index * 2, true);
+      }
+      return data;
+    }
+
+    function decodePoints(value) {
+      const bytes = bytesFromBase64(value);
+      const view = new DataView(bytes.buffer);
+      const result = new Float32Array(bytes.length / 2);
+      for (let index = 0; index < result.length; index += 1) {
+        result[index] = view.getInt16(index * 2, true) / 1000;
+      }
+      return result;
+    }
+
+    function depthColor(metres) {
+      if (!Number.isFinite(metres) || metres <= 0) return [3, 6, 12, 255];
+      const t = Math.max(0, Math.min(1, (metres - 0.45) / (4.5 - 0.45)));
+      const red = Math.max(0, Math.min(1, 1.5 - 3.2 * t));
+      const green = Math.max(0, Math.min(1, 1.5 - Math.abs(3.2 * t - 1.6)));
+      const blue = Math.max(0, Math.min(1, 3.2 * t - 1.1));
+      return [Math.round(red * 255), Math.round(green * 255), Math.round(blue * 255), 255];
+    }
+
+    function jointColor(confidence) {
+      if (confidence >= 0.55) return colors.tracked;
+      if (confidence >= 0.15) return colors.inferred;
+      return colors.unsupported;
+    }
+
+    function drawBones(context, projected, confidence, scale = 1) {
+      if (!projected.length) return;
+      context.lineCap = "round";
+      for (const [first, second] of bones) {
+        const a = projected[first];
+        const b = projected[second];
+        if (!a || !b || !a.every(Number.isFinite) || !b.every(Number.isFinite)) continue;
+        const level = Math.min(confidence[first] || 0, confidence[second] || 0);
+        context.strokeStyle = colors.skeletonShadow;
+        context.lineWidth = 6 * scale;
+        context.beginPath(); context.moveTo(a[0], a[1]); context.lineTo(b[0], b[1]); context.stroke();
+        context.strokeStyle = jointColor(level);
+        context.lineWidth = 3 * scale;
+        context.beginPath(); context.moveTo(a[0], a[1]); context.lineTo(b[0], b[1]); context.stroke();
+      }
+      projected.forEach((point, index) => {
+        if (!point || !point.every(Number.isFinite)) return;
+        context.fillStyle = colors.skeletonShadow;
+        context.beginPath(); context.arc(point[0], point[1], 5 * scale, 0, Math.PI * 2); context.fill();
+        context.fillStyle = jointColor(confidence[index] || 0);
+        context.beginPath(); context.arc(point[0], point[1], 3.2 * scale, 0, Math.PI * 2); context.fill();
+      });
+    }
+
+    function drawDepth(index, camera) {
+      const canvas = document.getElementById(`depth-${index}`);
+      const context = fitCanvas(canvas);
+      context.fillStyle = colors.background;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      if (!camera.depth) return;
+
+      const depth = camera.depth;
+      const values = decodeDepth(depth.z16_b64);
+      const image = new ImageData(depth.width, depth.height);
+      for (let pixel = 0; pixel < values.length; pixel += 1) {
+        const rgba = depthColor(values[pixel] * depth.depth_scale_m);
+        const offset = pixel * 4;
+        image.data[offset] = rgba[0]; image.data[offset + 1] = rgba[1];
+        image.data[offset + 2] = rgba[2]; image.data[offset + 3] = 255;
+      }
+      const scratch = document.createElement("canvas");
+      scratch.width = depth.width; scratch.height = depth.height;
+      scratch.getContext("2d").putImageData(image, 0, 0);
+      context.imageSmoothingEnabled = false;
+      context.drawImage(scratch, 0, 0, canvas.width, canvas.height);
+
+      const pose = camera.pose;
+      if (!pose.valid) return;
+      const projected = pose.joints_m.map(joint => {
+        if (!joint || joint[2] <= 0.01) return null;
+        const u = depth.focal_x * joint[0] / joint[2] + depth.principal_x;
+        // SPiKE/ITOP uses +Y upward, while image rows grow downward.
+        const v = depth.principal_y - depth.focal_y * joint[1] / joint[2];
+        return [u / depth.source_width * canvas.width, v / depth.source_height * canvas.height];
+      });
+      drawBones(context, projected, pose.confidence, Math.max(1, canvas.width / 900));
+    }
+
+    function projectionPoint(value, minimum, maximum, start, length) {
+      return start + (value - minimum) / (maximum - minimum) * length;
+    }
+
+    function drawProjection(context, box, points, joints, confidence, side) {
+      const xMin = side ? 0.45 : -1.4;
+      const xMax = side ? 4.5 : 1.4;
+      const yMin = -1.8;
+      const yMax = 1.3;
+      context.save();
+      context.beginPath(); context.rect(box.x, box.y, box.width, box.height); context.clip();
+      context.strokeStyle = colors.grid; context.lineWidth = 1;
+      context.strokeRect(box.x + 0.5, box.y + 0.5, box.width - 1, box.height - 1);
+      for (let index = 0; index < points.length; index += 3) {
+        const xValue = side ? points[index + 2] : points[index];
+        const yValue = points[index + 1];
+        const x = projectionPoint(xValue, xMin, xMax, box.x, box.width);
+        const y = projectionPoint(yValue, yMax, yMin, box.y, box.height);
+        if (x < box.x || x > box.x + box.width || y < box.y || y > box.y + box.height) continue;
+        context.fillStyle = colors.points;
+        context.globalAlpha = 0.62;
+        context.fillRect(x, y, 1.5, 1.5);
+      }
+      context.globalAlpha = 1;
+      const projected = joints.map(joint => {
+        if (!joint) return null;
+        const xValue = side ? joint[2] : joint[0];
+        return [
+          projectionPoint(xValue, xMin, xMax, box.x, box.width),
+          projectionPoint(joint[1], yMax, yMin, box.y, box.height)
+        ];
+      });
+      drawBones(context, projected, confidence, Math.max(1, box.width / 500));
+      context.fillStyle = colors.text;
+      context.font = `${Math.max(12, Math.round(box.width / 34))}px Segoe UI`;
+      context.fillText(side ? "Z / Y" : "X / Y", box.x + 8, box.y + 18);
+      context.restore();
+    }
+
+    function drawCloud(index, camera) {
+      const canvas = document.getElementById(`cloud-${index}`);
+      const context = fitCanvas(canvas);
+      context.fillStyle = colors.background;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const points = decodePoints(camera.player.points_mm_b64 || "");
+      const joints = camera.pose.valid ? camera.pose.joints_m : [];
+      const confidence = camera.pose.valid ? camera.pose.confidence : [];
+      const gap = 10;
+      const width = (canvas.width - gap) / 2;
+      drawProjection(context, { x: 0, y: 0, width, height: canvas.height }, points, joints, confidence, false);
+      drawProjection(context, { x: width + gap, y: 0, width, height: canvas.height }, points, joints, confidence, true);
+    }
+
+    function cameraStatus(camera, stage) {
+      if (!camera.depth) return ["等待深度帧", ""];
+      if (stage === "calibrating") {
+        return [`空场 ${camera.calibration_frames}/${camera.calibration_target}`, "warn"];
+      }
+      if (!camera.player.valid) return ["未隔离到人体", "warn"];
+      if (!camera.pose.valid) return ["已有点云，等待推理", "warn"];
+      return ["骨架已输出", "ok"];
+    }
+
+    function updateCamera(camera, stage) {
+      const index = camera.index;
+      document.getElementById(`serial-${index}`).textContent = camera.serial || "--";
+      const status = document.getElementById(`status-${index}`);
+      const [label, kind] = cameraStatus(camera, stage);
+      status.textContent = label;
+      status.className = `badge ${kind}`;
+      document.getElementById(`fps-${index}`).textContent =
+        `${camera.capture_fps.toFixed(1)} FPS · ${camera.age_ms ?? "--"} ms`;
+      document.getElementById(`points-${index}`).textContent =
+        camera.player.valid ? camera.player.point_count.toLocaleString() : "0";
+      document.getElementById(`extent-${index}`).textContent = camera.player.valid
+        ? camera.player.extent_m.map(value => Number(value).toFixed(2)).join(" / ") + " m"
+        : "-- m";
+      document.getElementById(`infer-${index}`).textContent =
+        `${camera.pose.inference_ms ?? "--"} ms / ${camera.skipped_frames}`;
+      drawDepth(index, camera);
+      drawCloud(index, camera);
+    }
+
+    let stopped = false;
+    async function poll() {
+      if (stopped) return;
+      try {
+        const response = await fetch("/api/state", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const state = await response.json();
+        document.getElementById("message").textContent = state.message;
+        document.getElementById("pipeline").textContent =
+          `总推理 ${Number(state.inference_hz || 0).toFixed(1)} Hz · ${state.inference_ms ?? "--"} ms`;
+        document.getElementById("summary").textContent =
+          `阶段：${state.stage} · 主摄像头：${state.primary_camera} · ${new Date(state.updated_ms).toLocaleTimeString()}`;
+        document.querySelectorAll("[data-mode]").forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.mode === state.mode));
+        });
+        state.cameras.forEach(camera => updateCamera(camera, state.stage));
+      } catch (error) {
+        document.getElementById("message").textContent = `连接中断：${error.message}`;
+      }
+      window.setTimeout(poll, 100);
+    }
+    poll();
+  </script>
+</body>
+</html>

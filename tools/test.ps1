@@ -25,8 +25,8 @@ $BuildRoot = Join-Path $RepositoryRoot 'build'
 $BinRoot = Join-Path $BuildRoot 'bin'
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'build.ps1') -ToolchainRoot $ToolchainRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw "build.ps1 failed with exit code $LASTEXITCODE."
+    if (-not $?) {
+        throw 'build.ps1 failed.'
     }
 }
 
@@ -45,6 +45,18 @@ $KinectPlugin = Join-Path $BinRoot 'dance_around_anygear_kinect.dll'
 $WebcamPlugin = Join-Path $BinRoot 'dance_around_anygear_webcam.dll'
 $SteamVrPlugin = Join-Path $BinRoot 'dance_around_anygear_steamvr.dll'
 $D4xxPlugin = Join-Path $BinRoot 'dance_around_anygear_d4xx.dll'
+$D4xxExperimentalPlugin = Join-Path $BinRoot `
+    'dance_around_anygear_d4xx_mediapipe_experimental.dll'
+$D4xxSpikePlugin = Join-Path $BinRoot `
+    'dance_around_anygear_d4xx_spike.dll'
+$SpikeIpcProtocolTest = Join-Path $BinRoot `
+    'anygear_spike_ipc_protocol_test.exe'
+$BodyPredictionTest = Join-Path $BinRoot `
+    'anygear_body_prediction_test.exe'
+$SpikePoseTest = Join-Path $BinRoot `
+    'anygear_spike_pose_test.exe'
+$PoseTrackingStateTest = Join-Path $BinRoot `
+    'anygear_pose_tracking_state_test.exe'
 $LoaderSmoke = Join-Path $BinRoot 'anygear_loader_smoke.exe'
 $Harness = Join-Path $BinRoot 'anygear_vp4u_harness.exe'
 $KinectProbe = Join-Path $BinRoot 'anygear_kinect_probe.exe'
@@ -52,11 +64,21 @@ $WebcamProbe = Join-Path $BinRoot 'anygear_webcam_probe.exe'
 $MediaPipeProbe = Join-Path $BinRoot 'anygear_mediapipe_probe.exe'
 $SteamVrPoseTest = Join-Path $BinRoot 'anygear_steamvr_pose_test.exe'
 $SteamVrProbe = Join-Path $BinRoot 'anygear_steamvr_probe.exe'
+$D4xxIrTest = Join-Path $BinRoot 'anygear_d4xx_ir_bgr_test.exe'
+$D4xxKinectTeacherRecorder = Join-Path $BinRoot `
+    'anygear_d4xx_kinect_teacher_record.exe'
+$D4xxBridgeSmoke = Join-Path $BinRoot 'anygear_d4xx_native_bridge_smoke.exe'
+$D4xxReconnectTest = Join-Path $BinRoot 'anygear_d4xx_reconnect_test.exe'
+$FakeVp4u = Join-Path $BuildRoot 'test-d4xx-native\visionposewrapper.dll'
+$FakeRealSense = Join-Path $BuildRoot 'test-d4xx-native\realsense2.dll'
 foreach ($required in @(
     $KinectPlugin, $WebcamPlugin, $SteamVrPlugin, $D4xxPlugin,
+    $D4xxExperimentalPlugin, $D4xxSpikePlugin, $SpikeIpcProtocolTest,
+    $BodyPredictionTest, $SpikePoseTest, $PoseTrackingStateTest,
     $LoaderSmoke, $Harness,
     $KinectProbe, $WebcamProbe, $MediaPipeProbe, $SteamVrPoseTest,
-    $SteamVrProbe)) {
+    $SteamVrProbe, $D4xxIrTest, $D4xxKinectTeacherRecorder,
+    $D4xxBridgeSmoke, $D4xxReconnectTest, $FakeVp4u, $FakeRealSense)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required build output not found: $required"
     }
@@ -65,16 +87,25 @@ Copy-Item -LiteralPath $KinectPlugin -Destination $StageRoot
 Copy-Item -LiteralPath $WebcamPlugin -Destination $StageRoot
 Copy-Item -LiteralPath $SteamVrPlugin -Destination $StageRoot
 Copy-Item -LiteralPath $D4xxPlugin -Destination $StageRoot
+Copy-Item -LiteralPath $D4xxExperimentalPlugin -Destination $StageRoot
+Copy-Item -LiteralPath $D4xxSpikePlugin -Destination $StageRoot
 $StagedKinectPlugin = Join-Path $StageRoot 'dance_around_anygear_kinect.dll'
 $StagedWebcamPlugin = Join-Path $StageRoot 'dance_around_anygear_webcam.dll'
 $StagedSteamVrPlugin = Join-Path $StageRoot 'dance_around_anygear_steamvr.dll'
 $StagedD4xxPlugin = Join-Path $StageRoot 'dance_around_anygear_d4xx.dll'
+$StagedD4xxExperimentalPlugin = Join-Path $StageRoot `
+    'dance_around_anygear_d4xx_mediapipe_experimental.dll'
+$StagedD4xxSpikePlugin = Join-Path $StageRoot `
+    'dance_around_anygear_d4xx_spike.dll'
 
 foreach ($entry in @(
     @{ Name = 'Kinect'; Path = $StagedKinectPlugin },
     @{ Name = 'MediaPipe webcam'; Path = $StagedWebcamPlugin },
     @{ Name = 'SteamVR'; Path = $StagedSteamVrPlugin },
-    @{ Name = 'RealSense D4xx'; Path = $StagedD4xxPlugin })) {
+    @{ Name = 'RealSense D4xx MediaPipe experimental';
+       Path = $StagedD4xxExperimentalPlugin },
+    @{ Name = 'RealSense D4xx SPiKE experimental';
+       Path = $StagedD4xxSpikePlugin })) {
     Write-Host "[TEST] $($entry.Name) Spice loader fallback..."
     & $LoaderSmoke $entry.Path
     if ($LASTEXITCODE -ne 0) {
@@ -90,6 +121,51 @@ foreach ($entry in @(
     if ($LASTEXITCODE -ne 0) {
         throw "$($entry.Name) VP4U ABI test failed with exit code $LASTEXITCODE."
     }
+}
+
+Write-Host '[TEST] SPiKE shared-memory ABI layout...'
+& $SpikeIpcProtocolTest
+if ($LASTEXITCODE -ne 0) {
+    throw "SPiKE IPC protocol test failed with exit code $LASTEXITCODE."
+}
+
+Write-Host '[TEST] Bounded pose prediction and rigid derived endpoints...'
+& $BodyPredictionTest
+if ($LASTEXITCODE -ne 0) {
+    throw "Body prediction test failed with exit code $LASTEXITCODE."
+}
+
+Write-Host '[TEST] SPiKE anatomical landmark mapping...'
+& $SpikePoseTest
+if ($LASTEXITCODE -ne 0) {
+    throw "SPiKE pose mapping test failed with exit code $LASTEXITCODE."
+}
+
+Write-Host '[TEST] Pose tracking-state mapping...'
+& $PoseTrackingStateTest
+if ($LASTEXITCODE -ne 0) {
+    throw "Pose tracking-state test failed with exit code $LASTEXITCODE."
+}
+
+Write-Host '[TEST] Native D4xx Y8 to BGR24 conversion...'
+& $D4xxIrTest
+if ($LASTEXITCODE -ne 0) {
+    throw "D4xx IR conversion test failed with exit code $LASTEXITCODE."
+}
+Write-Host '[TEST] D4xx/Kinect teacher recorder serialization and pairing...'
+& $D4xxKinectTeacherRecorder '--self-test'
+if ($LASTEXITCODE -ne 0) {
+    throw "D4xx/Kinect teacher recorder self-test failed with exit code $LASTEXITCODE."
+}
+Write-Host '[TEST] Native D4xx original-VP4U bridge contract...'
+& $D4xxBridgeSmoke $StagedD4xxPlugin $FakeVp4u
+if ($LASTEXITCODE -ne 0) {
+    throw "D4xx native bridge test failed with exit code $LASTEXITCODE."
+}
+Write-Host '[TEST] D4xx USB transport invalidation and recovery...'
+& $D4xxReconnectTest $FakeRealSense
+if ($LASTEXITCODE -ne 0) {
+    throw "D4xx transport recovery test failed with exit code $LASTEXITCODE."
 }
 
 Write-Host '[TEST] Deterministic SteamVR body reconstruction...'

@@ -1,0 +1,212 @@
+From 409a790d18bdbfb38c01327af6d7a6be0dd92aa4 Mon Sep 17 00:00:00 2001
+From: Avimitin <dev@avimit.in>
+Date: Sun, 30 Aug 2026 17:37:42 +0800
+Subject: [PATCH 7/7] graphics: pace windowed DANCE aROUND at 60 FPS
+
+Use an explicit D3D11 presentation clock in windowed mode so non-120 Hz desktop displays do not turn the cabinet's interval-two cadence into 37.5 FPS. Keep the native fullscreen cadence unchanged.
+
+Co-authored-by: Codex <codex@openai.com>
+---
+ src/spice2x/games/udn/udn.cpp                 | 15 +++-
+ .../backends/d3d11/d3d11_swapchain.cpp        | 83 +++++++++++++++----
+ src/spice2x/hooks/graphics/graphics.cpp       |  1 +
+ src/spice2x/hooks/graphics/graphics.h         |  1 +
+ 4 files changed, 79 insertions(+), 21 deletions(-)
+
+diff --git a/src/spice2x/games/udn/udn.cpp b/src/spice2x/games/udn/udn.cpp
+index 31f430c..f084c29 100644
+--- a/src/spice2x/games/udn/udn.cpp
++++ b/src/spice2x/games/udn/udn.cpp
+@@ -253,10 +253,17 @@ namespace games::udn {
+     void UDNGame::attach() {
+         Game::attach();
+ 
+-        // The cabinet build presents without pacing on a desktop GPU. Requiring
+-        // two vertical intervals keeps Unity from filling the CPU/GPU queues;
+-        // the D3D11 hook also clears ALLOW_TEARING when applying this minimum.
+-        GRAPHICS_FORCE_VSYNC_INTERVAL = 2;
++        // The cabinet build presents without pacing on a desktop GPU. Its
++        // native 120 Hz display reaches 60 FPS with interval two, but applying
++        // that interval to a common 75 Hz window limits Unity to 37.5 FPS and
++        // also doubles the latency of frame-based pose filtering. Windowed
++        // mode therefore uses the explicit D3D11 60 FPS clock; native cabinet
++        // fullscreen retains the original two-interval presentation cadence.
++        if (GRAPHICS_WINDOWED) {
++            GRAPHICS_FORCE_FRAME_RATE = 60;
++        } else {
++            GRAPHICS_FORCE_VSYNC_INTERVAL = 2;
++        }
+ 
+         // The cabinet render surface is a 1920x3240-ish portrait stack. The host
+         // may reapply that size after startup, which puts
+diff --git a/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp b/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp
+index 820b591..0de3576 100644
+--- a/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp
++++ b/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
+ #include <cstdint>
+ #include <mutex>
+ 
+@@ -28,6 +29,7 @@
+ 
+ #include "hooks/graphics/graphics.h"
+ #include "hooks/graphics/graphics_udn.h"
++#include "util/precise_timer.h"
+ #include "util/time.h"
+ #include "util/utils.h"
+ 
+@@ -122,6 +124,8 @@ constexpr UINT DXGI_PRESENT_ALLOW_TEARING_FLAG = 0x00000200u;
+ std::atomic<uint64_t> g_forced_present_window_start {0};
+ std::atomic<uint64_t> g_forced_present_count {0};
+ std::atomic<bool> g_forced_present_announced {false};
++std::mutex g_forced_present_pacing_mutex;
++std::chrono::steady_clock::time_point g_next_forced_present {};
+ 
+ // Unity creates and owns its top-level window on a different thread from the
+ // D3D11 Present thread. Subclassing or resizing that HWND from Present can
+@@ -141,11 +145,16 @@ UINT window_attach_message() {
+     return message;
+ }
+ 
+-void track_forced_present(UINT interval) {
++void track_forced_present(UINT interval, UINT frame_rate) {
+     if (!g_forced_present_announced.exchange(true)) {
+-        log_info("graphics::d3d11",
+-                 "forcing main swapchain presentation interval to at least {}",
+-                 interval);
++        if (frame_rate > 0) {
++            log_info("graphics::d3d11",
++                     "pacing main swapchain at {} FPS", frame_rate);
++        } else {
++            log_info("graphics::d3d11",
++                     "forcing main swapchain presentation interval to at least {}",
++                     interval);
++        }
+     }
+ 
+     const uint64_t now = get_system_milliseconds();
+@@ -169,9 +178,15 @@ void track_forced_present(UINT interval) {
+             g_forced_present_count.exchange(0, std::memory_order_relaxed);
+     const double present_rate = static_cast<double>(frames) * 1000.0 /
+                                 static_cast<double>(elapsed_ms);
+-    log_info("graphics::d3d11",
+-             "bounded main swapchain present rate: {:.1f} FPS (interval {})",
+-             present_rate, interval);
++    if (frame_rate > 0) {
++        log_info("graphics::d3d11",
++                 "bounded main swapchain present rate: {:.1f} FPS (target {})",
++                 present_rate, frame_rate);
++    } else {
++        log_info("graphics::d3d11",
++                 "bounded main swapchain present rate: {:.1f} FPS (interval {})",
++                 present_rate, interval);
++    }
+ }
+ 
+ // sub-screens / IME helpers are usually child or zero-sized windows.
+@@ -212,6 +227,48 @@ bool is_main_game_swapchain(IDXGISwapChain *swapchain) {
+     return desc.OutputWindow == main;
+ }
+ 
++void pace_forced_present(UINT frame_rate) {
++    if (frame_rate == 0) {
++        return;
++    }
++
++    static timeutils::PreciseSleepTimer timer;
++    const auto period = std::chrono::nanoseconds(
++            1'000'000'000ULL / static_cast<uint64_t>(frame_rate));
++    std::lock_guard<std::mutex> lock(g_forced_present_pacing_mutex);
++    const auto now = std::chrono::steady_clock::now();
++    if (g_next_forced_present.time_since_epoch().count() == 0 ||
++        now > g_next_forced_present + period) {
++        g_next_forced_present = now + period;
++        return;
++    }
++    if (now < g_next_forced_present) {
++        timer.sleep(g_next_forced_present - now);
++    }
++    g_next_forced_present += period;
++}
++
++void apply_forced_present_policy(
++        IDXGISwapChain *swapchain, UINT &sync_interval, UINT &flags) {
++    if (!is_main_game_swapchain(swapchain)) {
++        return;
++    }
++    if (GRAPHICS_FORCE_FRAME_RATE > 0) {
++        pace_forced_present(GRAPHICS_FORCE_FRAME_RATE);
++        // A non-zero interval on a 75 Hz desktop can only produce 75 or
++        // 37.5 FPS. The explicit clock provides the requested 60 Hz cadence;
++        // windowed DWM composition still owns scan-out synchronization.
++        sync_interval = 0;
++        flags &= ~DXGI_PRESENT_ALLOW_TEARING_FLAG;
++        track_forced_present(sync_interval, GRAPHICS_FORCE_FRAME_RATE);
++    } else if (GRAPHICS_FORCE_VSYNC_INTERVAL > 0) {
++        sync_interval = std::max(
++                sync_interval, GRAPHICS_FORCE_VSYNC_INTERVAL);
++        flags &= ~DXGI_PRESENT_ALLOW_TEARING_FLAG;
++        track_forced_present(sync_interval, 0);
++    }
++}
++
+ LRESULT CALLBACK window_attach_getmessage(
+         int code, WPARAM w_param, LPARAM l_param) {
+     HWND target = nullptr;
+@@ -442,11 +499,7 @@ HRESULT STDMETHODCALLTYPE Present_hook(
+         schedule_udn_window_enforce(swapchain);
+         try_create_overlay(swapchain);
+         pump_frame(swapchain);
+-        if (GRAPHICS_FORCE_VSYNC_INTERVAL > 0 && is_main_game_swapchain(swapchain)) {
+-            SyncInterval = std::max(SyncInterval, GRAPHICS_FORCE_VSYNC_INTERVAL);
+-            Flags &= ~DXGI_PRESENT_ALLOW_TEARING_FLAG;
+-            track_forced_present(SyncInterval);
+-        }
++        apply_forced_present_policy(swapchain, SyncInterval, Flags);
+     }
+     return Present_orig(swapchain, SyncInterval, Flags);
+ }
+@@ -460,11 +513,7 @@ HRESULT STDMETHODCALLTYPE Present1_hook(
+         schedule_udn_window_enforce(swapchain);
+         try_create_overlay(swapchain);
+         pump_frame(swapchain);
+-        if (GRAPHICS_FORCE_VSYNC_INTERVAL > 0 && is_main_game_swapchain(swapchain)) {
+-            SyncInterval = std::max(SyncInterval, GRAPHICS_FORCE_VSYNC_INTERVAL);
+-            Flags &= ~DXGI_PRESENT_ALLOW_TEARING_FLAG;
+-            track_forced_present(SyncInterval);
+-        }
++        apply_forced_present_policy(swapchain, SyncInterval, Flags);
+     }
+     return Present1_orig(swapchain, SyncInterval, Flags, pParams);
+ }
+diff --git a/src/spice2x/hooks/graphics/graphics.cpp b/src/spice2x/hooks/graphics/graphics.cpp
+index 1236c3e..1f04dd6 100644
+--- a/src/spice2x/hooks/graphics/graphics.cpp
++++ b/src/spice2x/hooks/graphics/graphics.cpp
+@@ -105,6 +105,7 @@ bool GRAPHICS_WINDOWED = false;
+ std::vector<HWND> GRAPHICS_WINDOWS;
+ UINT GRAPHICS_FORCE_REFRESH = 0;
+ UINT GRAPHICS_FORCE_VSYNC_INTERVAL = 0;
++UINT GRAPHICS_FORCE_FRAME_RATE = 0;
+ std::optional<uint32_t> GRAPHICS_FORCE_REFRESH_SUB;
+ std::optional<int> GRAPHICS_FORCE_VSYNC_BUFFER;
+ bool GRAPHICS_FORCE_SINGLE_ADAPTER = false;
+diff --git a/src/spice2x/hooks/graphics/graphics.h b/src/spice2x/hooks/graphics/graphics.h
+index 06a58d9..258958e 100644
+--- a/src/spice2x/hooks/graphics/graphics.h
++++ b/src/spice2x/hooks/graphics/graphics.h
+@@ -63,6 +63,7 @@ extern bool GRAPHICS_WINDOWED;
+ extern std::vector<HWND> GRAPHICS_WINDOWS;
+ extern UINT GRAPHICS_FORCE_REFRESH;
+ extern UINT GRAPHICS_FORCE_VSYNC_INTERVAL;
++extern UINT GRAPHICS_FORCE_FRAME_RATE;
+ extern std::optional<uint32_t> GRAPHICS_FORCE_REFRESH_SUB;
+ extern std::optional<int> GRAPHICS_FORCE_VSYNC_BUFFER;
+ extern bool GRAPHICS_FORCE_SINGLE_ADAPTER;
+-- 
+2.55.0.windows.5
+

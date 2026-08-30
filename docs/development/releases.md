@@ -5,23 +5,25 @@ step accepts only exact `vMAJOR.MINOR.PATCH` tags and requires that version to
 match the CMake project version. A typical release is therefore:
 
 ```powershell
-git tag -a v0.3.0 -m 'dance-around-anygear v0.3.0'
-git push origin v0.3.0
+git tag -a v0.4.0 -m 'dance-around-anygear v0.4.0'
+git push origin v0.4.0
 ```
 
 The hosted `windows-2025` job restores only an ignored dependency cache, then
 revalidates every downloaded input. It statically reads the pinned Kinect SDK
 headers, checks out the pinned OpenVR commit, extracts the pinned MediaPipe
-runtime/model, and uses the pinned WinLibs compiler. Hardware and the game are
-not started in CI.
+runtime/model, prepares pinned librealsense headers/runtime, exports the pinned
+SPiKE checkpoint, freezes its DirectML worker, and uses the pinned WinLibs
+compiler. Hardware and the game are not started in CI.
 
 The release is created only after all of these gates pass:
 
 1. source-only tree policy;
-2. Release build of Kinect, webcam, and SteamVR entry DLLs;
-3. Spice loader, SDK hook, VP4U ABI, deterministic SteamVR pose, and MediaPipe
-   image tests;
-4. two isolated builds with identical DLL hashes;
+2. Release build of every entry DLL and the frozen DirectML worker;
+3. Spice loader, SDK hook, VP4U ABI, deterministic SteamVR pose, MediaPipe
+   image, SPiKE preprocessing, and cross-language IPC tests;
+4. two isolated builds with identical DLL hashes and two identical worker
+   directory manifests;
 5. clean Git/build-manifest commit match;
 6. exact ZIP dependency layout and release checksums.
 
@@ -35,10 +37,13 @@ already exists, and refuses to replace an existing published release.
 dance_around_anygear_kinect.dll
 dance-around-anygear-v<version>-webcam-win64.zip
 dance-around-anygear-v<version>-steamvr-win64.zip
+dance_around_anygear_d4xx.dll
+dance-around-anygear-v<version>-d4xx-spike-win64.zip
 dance-around-anygear-v<version>-build-manifest.json
 SHA256SUMS
 ```
 
-Kinect is the only direct DLL asset. Webcam and SteamVR remain ZIP files because
-their DLLs resolve a backend-owned adjacent dependency directory. GitHub also
-adds its normal source archives automatically.
+Kinect and the native D4xx bridge are direct DLL assets. Webcam, SteamVR, and
+D4xx/SPiKE remain ZIP files because their DLLs resolve backend-owned adjacent
+dependency directories. GitHub also adds its normal source archives
+automatically.

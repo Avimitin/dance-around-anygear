@@ -98,6 +98,8 @@ $ConfigureArguments = @(
     '-DANYGEAR_BUILD_WEBCAM=ON',
     '-DANYGEAR_BUILD_STEAMVR=ON',
     '-DANYGEAR_BUILD_D4XX=ON',
+    '-DANYGEAR_BUILD_D4XX_MEDIAPIPE_EXPERIMENTAL=ON',
+    '-DANYGEAR_BUILD_D4XX_SPIKE=ON',
     "-DANYGEAR_KINECT_SDK_ROOT=$KinectSdkRoot",
     "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot",
     "-DANYGEAR_LIBREALSENSE_INCLUDE_DIR=$LibrealsenseIncludeDir"
@@ -121,6 +123,8 @@ $ExpectedOutputs = @(
     (Join-Path $BinOutput 'dance_around_anygear_webcam.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_steamvr.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_d4xx.dll'),
+    (Join-Path $BinOutput 'dance_around_anygear_d4xx_mediapipe_experimental.dll'),
+    (Join-Path $BinOutput 'dance_around_anygear_d4xx_spike.dll'),
     (Join-Path $BinOutput 'anygear_loader_smoke.exe'),
     (Join-Path $BinOutput 'anygear_vp4u_harness.exe'),
     (Join-Path $BinOutput 'anygear_kinect_probe.exe'),
@@ -128,7 +132,16 @@ $ExpectedOutputs = @(
     (Join-Path $BinOutput 'anygear_mediapipe_probe.exe'),
     (Join-Path $BinOutput 'anygear_steamvr_pose_test.exe'),
     (Join-Path $BinOutput 'anygear_steamvr_probe.exe'),
-    (Join-Path $BinOutput 'anygear_d4xx_probe.exe')
+    (Join-Path $BinOutput 'anygear_d4xx_probe.exe'),
+    (Join-Path $BinOutput 'anygear_d4xx_depth_record.exe'),
+    (Join-Path $BinOutput 'anygear_d4xx_kinect_teacher_record.exe'),
+    (Join-Path $BinOutput 'anygear_d4xx_ir_bgr_test.exe'),
+    (Join-Path $BinOutput 'anygear_d4xx_native_bridge_smoke.exe'),
+    (Join-Path $BinOutput 'anygear_body_prediction_test.exe'),
+    (Join-Path $BinOutput 'anygear_spike_pose_test.exe'),
+    (Join-Path $BinOutput 'anygear_spike_ipc_protocol_test.exe'),
+    (Join-Path $BinOutput 'anygear_spike_ipc_host_test.exe'),
+    (Join-Path $BinOutput 'anygear_spike_ipc_replay.exe')
 )
 foreach ($output in $ExpectedOutputs) {
     if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
@@ -136,13 +149,14 @@ foreach ($output in $ExpectedOutputs) {
     }
 }
 
-$PluginDlls = @(
+$Vp4uPluginDlls = @(
     (Join-Path $BinOutput 'dance_around_anygear_kinect.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_webcam.dll'),
     (Join-Path $BinOutput 'dance_around_anygear_steamvr.dll'),
-    (Join-Path $BinOutput 'dance_around_anygear_d4xx.dll')
+    (Join-Path $BinOutput 'dance_around_anygear_d4xx_mediapipe_experimental.dll'),
+    (Join-Path $BinOutput 'dance_around_anygear_d4xx_spike.dll')
 )
-foreach ($PluginDll in $PluginDlls) {
+foreach ($PluginDll in $Vp4uPluginDlls) {
     $PluginExports = (& $ObjdumpExe -p $PluginDll | Out-String)
     foreach ($name in @(
         'vp4uGetVersion', 'vp4uPreboot', 'vp4uShutdown', 'vp4uGetApiTable',
@@ -156,6 +170,22 @@ foreach ($PluginDll in $PluginDlls) {
         if (-not $PluginSections.Contains($section)) {
             throw "Embedded debug section is missing from $PluginDll`: $section"
         }
+    }
+}
+
+$NativeD4xxPlugin = Join-Path $BinOutput 'dance_around_anygear_d4xx.dll'
+$NativeD4xxExports = (& $ObjdumpExe -p $NativeD4xxPlugin | Out-String)
+foreach ($name in @(
+    'vp4uGetVersion', 'vp4uPreboot', 'vp4uShutdown', 'vp4uGetApiTable',
+    'spice_sdk_entry_point', 'danceAroundAnygearGetBuildInfo')) {
+    if (-not $NativeD4xxExports.Contains($name)) {
+        throw "Required native D4xx export is missing: $name"
+    }
+}
+$NativeD4xxSections = (& $ObjdumpExe -h $NativeD4xxPlugin | Out-String)
+foreach ($section in @('.debug_info', '.debug_line')) {
+    if (-not $NativeD4xxSections.Contains($section)) {
+        throw "Embedded debug section is missing from $NativeD4xxPlugin`: $section"
     }
 }
 

@@ -5,6 +5,9 @@ param(
     [string] $Version,
     [string] $MediaPipeRoot,
     [string] $OpenVrRoot,
+    [string] $SpikeWorkerRoot,
+    [string] $SpikeModel,
+    [string] $RealSenseRuntime,
     [string] $Destination
 )
 
@@ -58,6 +61,8 @@ $Plugins = [ordered]@{
     kinect = 'dance_around_anygear_kinect.dll'
     webcam = 'dance_around_anygear_webcam.dll'
     steamvr = 'dance_around_anygear_steamvr.dll'
+    d4xx = 'dance_around_anygear_d4xx.dll'
+    'd4xx-spike' = 'dance_around_anygear_d4xx_spike.dll'
 }
 $ManifestOutputs = @{}
 foreach ($Output in $Manifest.outputs) {
@@ -92,6 +97,8 @@ New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 # release asset. Backends with adjacent runtime directories are ZIP archives.
 Copy-Item -LiteralPath (Join-Path $BinRoot $Plugins.kinect) `
     -Destination (Join-Path $Destination $Plugins.kinect)
+Copy-Item -LiteralPath (Join-Path $BinRoot $Plugins.d4xx) `
+    -Destination (Join-Path $Destination $Plugins.d4xx)
 
 $PackageArguments = @{
     Version = $Version
@@ -115,13 +122,33 @@ if (-not $?) {
     throw 'SteamVR packaging failed.'
 }
 
+$PackageArguments = @{
+    Version = $Version
+}
+foreach ($Optional in @(
+    @{ Name = 'SpikeWorkerRoot'; Value = $SpikeWorkerRoot },
+    @{ Name = 'SpikeModel'; Value = $SpikeModel },
+    @{ Name = 'RealSenseRuntime'; Value = $RealSenseRuntime })) {
+    if (-not [string]::IsNullOrWhiteSpace($Optional.Value)) {
+        $PackageArguments[$Optional.Name] = $Optional.Value
+    }
+}
+& (Join-Path $PSScriptRoot 'package.ps1') @PackageArguments `
+    -Backend d4xx-spike
+if (-not $?) {
+    throw 'D4xx/SPiKE packaging failed.'
+}
+
 $DistRoot = Join-Path $RepositoryRoot 'dist'
 $WebcamZipName = "dance-around-anygear-v$Version-webcam-win64.zip"
 $SteamVrZipName = "dance-around-anygear-v$Version-steamvr-win64.zip"
+$SpikeZipName = "dance-around-anygear-v$Version-d4xx-spike-win64.zip"
 Copy-Item -LiteralPath (Join-Path $DistRoot $WebcamZipName) `
     -Destination (Join-Path $Destination $WebcamZipName)
 Copy-Item -LiteralPath (Join-Path $DistRoot $SteamVrZipName) `
     -Destination (Join-Path $Destination $SteamVrZipName)
+Copy-Item -LiteralPath (Join-Path $DistRoot $SpikeZipName) `
+    -Destination (Join-Path $Destination $SpikeZipName)
 
 $ReleaseManifestName = "dance-around-anygear-v$Version-build-manifest.json"
 Copy-Item -LiteralPath $ManifestPath `
@@ -140,6 +167,22 @@ $ExpectedEntries = [ordered]@{
         "dance-around-anygear-v$Version-steamvr-win64/dance_around_anygear_steamvr.dll",
         "dance-around-anygear-v$Version-steamvr-win64/dance_around_anygear_steamvr/openvr_api.dll",
         "dance-around-anygear-v$Version-steamvr-win64/dance_around_anygear_steamvr/LICENSE.openvr.txt"
+    )
+    $SpikeZipName = @(
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike.dll",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike.json",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/realsense2.dll",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/spike-itop-side-primary-fp16.onnx",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/LICENSE.librealsense.txt",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/dance_around_anygear_spike_worker.exe",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/_internal/onnxruntime/capi/DirectML.dll",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/_internal/onnxruntime/capi/onnxruntime.dll",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/LICENSE.onnxruntime.txt",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/NOTICE.onnxruntime.txt",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/LICENSE.spike.txt",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/AUTHORS.cc3d.txt",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/LICENSE.cc3d-gpl.txt",
+        "dance-around-anygear-v$Version-d4xx-spike-win64/dance_around_anygear_d4xx_spike/worker/LICENSE.cc3d-lgpl.txt"
     )
 }
 foreach ($ZipName in $ExpectedEntries.Keys) {

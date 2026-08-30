@@ -5,6 +5,7 @@
 /.deps/
 /.cache/
 __pycache__/
+**/.venv/
 
 # Native binaries and symbols must never be committed
 *.dll

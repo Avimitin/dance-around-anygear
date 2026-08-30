@@ -13,11 +13,12 @@ Spice -k dance_around_anygear_<backend>.dll
   -> backend produces preview/calibration/pose callbacks
 ```
 
-Each entry DLL is monolithic. It owns selection, dependency discovery, stage
-logging, loader redirection, the documented VP4U compatibility ABI, and its sensor
-backend. Sensor-specific code remains separated internally so Kinect, webcam,
-SteamVR, and future D4xx targets share the same ABI core. A backend may have adjacent
-data/runtime dependencies, but Spice loads only the entry DLL.
+Each entry DLL is a complete control plane. It owns selection, dependency
+discovery, stage logging, loader redirection, and the documented VP4U
+compatibility ABI. Lightweight sensor backends run inside that DLL. A backend
+may also own adjacent data/runtime dependencies or a bounded compute worker,
+but Spice still loads only the entry DLL. Sensor-specific code remains
+separated internally so all targets share the same ABI core.
 
 Heavy initialization must not occur in `DllMain`. Spice's `-k` lifecycle calls
 the exported `spice_sdk_entry_point` before `avs::game::entry_main`, which is
@@ -58,6 +59,29 @@ The entry DLL initializes OpenVR as a background pose client. It neither
 creates a rendering context nor submits frames to a headset. HMD, controller,
 and user-assigned generic-tracker poses are reconstructed into the common
 33-landmark stage representation before the shared VP4U body mapper runs.
+
+The depth-only D4xx/SPiKE release uses this layout:
+
+```text
+dance_around_anygear_d4xx_spike.dll       <- only Spice -k target
+dance_around_anygear_d4xx_spike.json
+dance_around_anygear_d4xx_spike/
+  realsense2.dll
+  spike-itop-side-primary-fp16.onnx
+  LICENSE.librealsense.txt
+  worker/
+    dance_around_anygear_spike_worker.exe
+    _internal/...
+    LICENSE.*.txt
+    NOTICE.onnxruntime.txt
+```
+
+The entry DLL owns two native depth streams and a bounded shared-memory
+channel. It launches the worker outside the loader lock, bounds startup and
+shutdown, validates protocol versions, and converts returned joints to VP4U.
+The worker owns short background calibration, foreground isolation,
+deterministic sampling, DirectML inference, and optional calibrated two-view
+fusion. This backend requests neither RGB nor a host-visible Y8 stream.
 
 ## Ownership rules
 

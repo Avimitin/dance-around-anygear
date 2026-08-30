@@ -22,7 +22,26 @@ struct D4xxOptions {
     std::string primary_serial;
     int required_devices = 2;
     int infrared_index = 1;
+    // A pipeline that stops publishing complete frames is rebuilt by serial.
+    // This covers a transient USB reset without keeping the last depth packet
+    // alive indefinitely. Values are configurable so hardware validation can
+    // distinguish a real transport fault from a slow startup.
+    int frame_stall_timeout_ms = 1500;
+    int reconnect_delay_ms = 500;
     float depth_scale_m = 0.001f;
+    // Per-device librealsense options used by capture research. A missing
+    // entry or -1 preserves the camera's current setting. Other values map
+    // directly to RS2_OPTION_EMITTER_ENABLED / RS2_OPTION_EMITTER_ON_OFF.
+    std::vector<int> emitter_enabled_by_device;
+    std::vector<int> emitter_on_off_by_device;
+    std::vector<int> visual_preset_by_device;
+    // The legacy MediaPipe bridge requires depth in IR pixel coordinates.
+    // Native point-cloud models should keep the original depth viewport.
+    bool align_depth_to_infrared = true;
+    // Point-cloud backends do not consume host-visible infrared pixels. The
+    // depth ASIC still uses its stereo imagers internally; this only removes
+    // the redundant Y8 USB stream and frame copy.
+    bool enable_infrared = true;
     float mirror_center_x = 0.55f;
     bool face_to_face = true;
     bool auto_center_z = true;
@@ -36,6 +55,27 @@ struct D4xxOptions {
     float smoothing = 0.45f;
     D4xxLogCallback log = nullptr;
     void* log_context = nullptr;
+};
+
+struct D4xxDepthIntrinsics {
+    int width = 0;
+    int height = 0;
+    float principal_x = 0.0f;
+    float principal_y = 0.0f;
+    float focal_x = 0.0f;
+    float focal_y = 0.0f;
+    int distortion_model = 0;
+    float distortion[5]{};
+};
+
+struct D4xxDepthFrame {
+    int device_index = -1;
+    std::string serial;
+    std::uint64_t sequence = 0;
+    std::int64_t host_time_ns = 0;
+    float depth_scale_m = 0.001f;
+    D4xxDepthIntrinsics intrinsics;
+    std::vector<std::uint16_t> depth;
 };
 
 class D4xxSource {
@@ -61,6 +101,12 @@ public:
     // hip-relative MediaPipe estimate so one occluded joint does not drop the
     // whole body.
     bool apply_depth_to_pose(PoseResult* pose);
+
+    // Copy a complete aligned Z16 frame only when it is newer than
+    // after_sequence. This is used by offline research recorders without
+    // exposing librealsense objects or coupling their lifetime to callers.
+    bool get_depth_frame(int device_index, std::uint64_t after_sequence,
+                         D4xxDepthFrame* out) const;
 
     int device_count() const;
     int active_device_count() const;

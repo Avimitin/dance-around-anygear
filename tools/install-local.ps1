@@ -3,10 +3,15 @@ param(
     [Parameter(Mandatory)]
     [Alias('GameRoot')]
     [string] $CabinetRoot,
-    [ValidateSet('kinect', 'webcam', 'steamvr')]
+    [ValidateSet('kinect', 'webcam', 'steamvr', 'd4xx', 'd4xx-spike')]
     [string] $Backend = 'kinect',
     [string] $MediaPipeRoot,
     [string] $OpenVrRoot,
+    [string] $SpikeWorkerRoot,
+    [string] $SpikeModel,
+    [string] $RealSenseRuntime,
+    [string] $NvidiaRuntimeRoot,
+    [string] $CudaRoot,
     [string] $WindowSize,
     [string] $WindowPosition,
     [switch] $GenerateLauncher
@@ -29,7 +34,8 @@ foreach ($required in @($SpiceExe, $VendorVp4u)) {
 }
 
 $BinRoot = Join-Path $RepositoryRoot 'build\bin'
-$PluginName = "dance_around_anygear_$Backend.dll"
+$BackendStem = $Backend.Replace('-', '_')
+$PluginName = "dance_around_anygear_$BackendStem.dll"
 $PluginSource = Join-Path $BinRoot $PluginName
 foreach ($required in @($PluginSource)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
@@ -39,6 +45,92 @@ foreach ($required in @($PluginSource)) {
 
 $MediaPipeSources = [ordered]@{}
 $OpenVrSources = [ordered]@{}
+$SpikeSources = [ordered]@{}
+$D4xxConfigJson = $null
+if ($Backend -eq 'd4xx') {
+    $ConfigSource = Join-Path $RepositoryRoot `
+        'config\dance_around_anygear_d4xx.json'
+    $D4xxConfig = Get-Content -LiteralPath $ConfigSource -Raw |
+        ConvertFrom-Json
+    $HasNvidiaRuntime = -not [string]::IsNullOrWhiteSpace($NvidiaRuntimeRoot)
+    $HasCuda = -not [string]::IsNullOrWhiteSpace($CudaRoot)
+    if ($HasNvidiaRuntime -xor $HasCuda) {
+        throw 'NvidiaRuntimeRoot and CudaRoot must be supplied together.'
+    }
+    if ($HasNvidiaRuntime) {
+        $NvidiaRuntimeRoot = (Resolve-Path -LiteralPath `
+            $NvidiaRuntimeRoot -ErrorAction Stop).Path
+        $CudaRoot = (Resolve-Path -LiteralPath $CudaRoot -ErrorAction Stop).Path
+        foreach ($Required in @(
+            (Join-Path $NvidiaRuntimeRoot 'TensorRT-7.2.1.6\lib\nvinfer.dll'),
+            (Join-Path $NvidiaRuntimeRoot 'cudnn-8.0.4.30\bin\cudnn64_8.dll'),
+            (Join-Path $CudaRoot 'bin\cudart64_110.dll')
+        )) {
+            if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
+                throw "D4xx NVIDIA runtime file not found: $Required"
+            }
+        }
+        $D4xxConfig.D4xxNativeBridge.NvidiaRuntimeRoot = $NvidiaRuntimeRoot
+        $D4xxConfig.D4xxNativeBridge.CudaRoot = $CudaRoot
+    }
+    $D4xxConfigJson = $D4xxConfig | ConvertTo-Json -Depth 8
+}
+if ($Backend -eq 'd4xx-spike') {
+    if ([string]::IsNullOrWhiteSpace($SpikeWorkerRoot)) {
+        $SpikeWorkerRoot = Join-Path $RepositoryRoot `
+            'build\spike-worker\dist\dance_around_anygear_spike_worker'
+    }
+    if ([string]::IsNullOrWhiteSpace($SpikeModel)) {
+        $SpikeModel = Join-Path $RepositoryRoot `
+            '.deps\spike\57ddaec83dad754aed813afacab4d0591fd387b1\spike-itop-side-primary-fp16.onnx'
+    }
+    if ([string]::IsNullOrWhiteSpace($RealSenseRuntime)) {
+        $RealSenseRuntime = Join-Path $RepositoryRoot `
+            '.deps\librealsense\v2.50.0\windows-x86_64\realsense2.dll'
+    }
+    $SpikeWorkerRoot = (Resolve-Path -LiteralPath $SpikeWorkerRoot `
+        -ErrorAction Stop).Path
+    $SpikeModel = (Resolve-Path -LiteralPath $SpikeModel -ErrorAction Stop).Path
+    $RealSenseRuntime = (Resolve-Path -LiteralPath $RealSenseRuntime `
+        -ErrorAction Stop).Path
+    $SpikeConfigSource = Join-Path $RepositoryRoot `
+        'config\dance_around_anygear_d4xx_spike.json'
+    $LibrealsenseLicense = Join-Path $RepositoryRoot `
+        '.deps\librealsense\v2.50.0\LICENSE.librealsense.txt'
+    $SpikeSources['worker'] = Join-Path $SpikeWorkerRoot `
+        'dance_around_anygear_spike_worker.exe'
+    $SpikeSources['model'] = $SpikeModel
+    $SpikeSources['realsense'] = $RealSenseRuntime
+    $SpikeSources['config'] = $SpikeConfigSource
+    $SpikeSources['license'] = $LibrealsenseLicense
+    foreach ($Source in $SpikeSources.Values) {
+        if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+            throw "D4xx/SPiKE dependency not found: $Source"
+        }
+    }
+    $PinnedFiles = [ordered]@{
+        $SpikeModel = @{
+            Bytes = 143295911
+            Sha256 = 'C48C40FF94C8F358762DB296DA0117DCFF78D8C4AD2FA4DB575298979BF2DA0D'
+        }
+        $RealSenseRuntime = @{
+            Bytes = 31955456
+            Sha256 = 'C8B83F041C1D92C264A0BFCDA5C9F28197ED212F7FAC40237DF63FFD2D5D1C4A'
+        }
+        $LibrealsenseLicense = @{
+            Bytes = 11352
+            Sha256 = 'C7AA1FDF0E38C4827FEF17859DDBFAC800B8995F3EC875A06DD23C79135F956D'
+        }
+    }
+    foreach ($Path in $PinnedFiles.Keys) {
+        $Item = Get-Item -LiteralPath $Path
+        $ActualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+        if ($Item.Length -ne $PinnedFiles[$Path].Bytes -or
+            $ActualHash -ne $PinnedFiles[$Path].Sha256) {
+            throw "D4xx/SPiKE dependency mismatch: $Path"
+        }
+    }
+}
 if ($Backend -eq 'webcam') {
     if ([string]::IsNullOrWhiteSpace($MediaPipeRoot)) {
         $MediaPipeRoot = Join-Path $RepositoryRoot '.deps\mediapipe\v1.0.0\windows-x86_64'
@@ -89,10 +181,42 @@ if ($Backend -eq 'steamvr') {
         $OpenVrSources[$DependencyHashes[$RelativePath].Name] = $Source
     }
 }
-
+if ($Backend -eq 'd4xx-spike') {
+    $DependencyDestination = Join-Path $CabinetRoot `
+        'dance_around_anygear_d4xx_spike'
+    if (Test-Path -LiteralPath $DependencyDestination) {
+        $Resolved = (Resolve-Path -LiteralPath $DependencyDestination).Path
+        $ExpectedPrefix = $CabinetRoot.TrimEnd('\') + '\'
+        if (-not $Resolved.StartsWith(
+                $ExpectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to replace dependency directory: $Resolved"
+        }
+        Remove-Item -LiteralPath $Resolved -Recurse -Force
+    }
+    $WorkerDestination = Join-Path $DependencyDestination 'worker'
+    New-Item -ItemType Directory -Path $WorkerDestination -Force | Out-Null
+    Copy-Item -Path (Join-Path $SpikeWorkerRoot '*') `
+        -Destination $WorkerDestination -Recurse -Force
+    Copy-Item -LiteralPath $SpikeModel -Destination (Join-Path `
+        $DependencyDestination 'spike-itop-side-primary-fp16.onnx') -Force
+    Copy-Item -LiteralPath $RealSenseRuntime -Destination (Join-Path `
+        $DependencyDestination 'realsense2.dll') -Force
+    Copy-Item -LiteralPath $LibrealsenseLicense -Destination (Join-Path `
+        $DependencyDestination 'LICENSE.librealsense.txt') -Force
+    Copy-Item -LiteralPath $SpikeConfigSource -Destination (Join-Path `
+        $CabinetRoot 'dance_around_anygear_d4xx_spike.json') -Force
+}
 # All inputs have now been validated. Only start changing the cabinet tree
 # after a missing or mismatched dependency can no longer leave a partial install.
 Copy-Item -LiteralPath $PluginSource -Destination (Join-Path $CabinetRoot $PluginName) -Force
+if ($Backend -eq 'd4xx') {
+    $ConfigDestination = Join-Path $CabinetRoot `
+        'dance_around_anygear_d4xx.json'
+    [IO.File]::WriteAllText(
+        $ConfigDestination,
+        $D4xxConfigJson + [Environment]::NewLine,
+        [Text.UTF8Encoding]::new($false))
+}
 if ($Backend -eq 'webcam') {
     $DependencyDestination = Join-Path $CabinetRoot 'dance_around_anygear_webcam'
     New-Item -ItemType Directory -Path $DependencyDestination -Force | Out-Null

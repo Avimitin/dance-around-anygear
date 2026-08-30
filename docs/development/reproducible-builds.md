@@ -99,6 +99,41 @@ require the user or release maintainer to acquire the NVIDIA archives. No D4xx
 release may be published until the exact input and extracted DLL hashes have
 been recorded in `dependency-lock.json` and the staging script verifies them.
 
+The independent D4xx/SPiKE path does not use that NVIDIA stack. Its build is
+split into these pinned inputs:
+
+```text
+librealsense source commit       c94410a420b74e5fb6a414bd12215c05ddd82b69
+librealsense C API               25000
+SPiKE source commit              57ddaec83dad754aed813afacab4d0591fd387b1
+Python                           3.10.5
+uv                               0.12.7
+PyTorch CPU, export only         2.11.0
+ONNX / opset                     1.22.0 / 20
+ONNX Runtime DirectML            1.23.0
+connected-components-3d          4.0.0
+PyInstaller                      6.22.2
+```
+
+Maintainer-only model work is pinned separately: PyTorch 2.11.0+cu128 for
+fine-tuning, SciPy 1.15.3 for offline synchronized-surface calibration, and
+h5py 3.14.0 for public ITOP evaluation. The ITOP version 1.0 archive URLs,
+compressed and expanded hashes, and exact Windows h5py/SciPy wheels are
+recorded in `dependency-lock.json`. None of these research-only inputs enter a
+release archive.
+
+`tools/bootstrap-librealsense.ps1` verifies the pinned source archive and
+official Unity package, then extracts only C headers, the Apache-2.0 license,
+and the x64 2.50.0 runtime. `tools/bootstrap-spike-runtime.ps1` verifies the
+published checkpoint and exports a static FP16 ONNX file. The output must
+match the recorded 143,295,911-byte size and SHA-256 before packaging.
+
+The source tree contains the fixed-shape SPiKE inference definition and its
+MIT license, not the checkpoint, ONNX file, or research datasets. The two
+`uv.lock` files pin the complete export, test, frozen-worker, public-evaluation,
+and CUDA fine-tuning environments. The downstream package needs no Python,
+PyTorch, CUDA, TensorRT, SciPy, h5py, or network access.
+
 ## Reproducibility check
 
 Run two isolated builds from the same source/toolchain and require an exact DLL
@@ -109,7 +144,14 @@ hash match:
 ```
 
 The build maps both source and binary directories out of DWARF, retains the
-debug sections, and disables the PE timestamp. Kinect, webcam, and SteamVR
-entry DLLs must match byte-for-byte. Package files are sorted and every ZIP
-entry receives the fixed DOS epoch timestamp, so repeated packaging from the
-same DLLs and pinned dependencies is byte-for-byte stable as well.
+debug sections, and disables the PE timestamp. All entry DLLs must match
+byte-for-byte. The frozen DirectML worker is built twice with a fixed source
+epoch and Python hash seed; every file in both trees must match:
+
+```powershell
+./tools/check-spike-worker-reproducible.ps1
+```
+
+Package files are sorted and every ZIP entry receives the fixed DOS epoch
+timestamp, so repeated packaging from the same DLLs and pinned dependencies is
+byte-for-byte stable as well.

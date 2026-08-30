@@ -2,6 +2,7 @@
 // librealsense is loaded from a plugin-relative path; no import library is used.
 #include "d4xx.h"
 
+#include "d4xx/ir_bgr.h"
 #include "webcam.h"
 
 #include <algorithm>
@@ -56,6 +57,16 @@ struct RealSenseApi {
     ANYGEAR_RS2_FUNCTION(rs2_delete_device);
     ANYGEAR_RS2_FUNCTION(rs2_supports_device_info);
     ANYGEAR_RS2_FUNCTION(rs2_get_device_info);
+    ANYGEAR_RS2_FUNCTION(rs2_query_sensors);
+    ANYGEAR_RS2_FUNCTION(rs2_delete_sensor_list);
+    ANYGEAR_RS2_FUNCTION(rs2_get_sensors_count);
+    ANYGEAR_RS2_FUNCTION(rs2_create_sensor);
+    ANYGEAR_RS2_FUNCTION(rs2_delete_sensor);
+    ANYGEAR_RS2_FUNCTION(rs2_is_sensor_extendable_to);
+    ANYGEAR_RS2_FUNCTION(rs2_get_depth_scale);
+    ANYGEAR_RS2_FUNCTION(rs2_supports_option);
+    ANYGEAR_RS2_FUNCTION(rs2_get_option);
+    ANYGEAR_RS2_FUNCTION(rs2_set_option);
     ANYGEAR_RS2_FUNCTION(rs2_create_pipeline);
     ANYGEAR_RS2_FUNCTION(rs2_delete_pipeline);
     ANYGEAR_RS2_FUNCTION(rs2_pipeline_stop);
@@ -111,6 +122,16 @@ struct RealSenseApi {
         ANYGEAR_LOAD_RS2(rs2_delete_device);
         ANYGEAR_LOAD_RS2(rs2_supports_device_info);
         ANYGEAR_LOAD_RS2(rs2_get_device_info);
+        ANYGEAR_LOAD_RS2(rs2_query_sensors);
+        ANYGEAR_LOAD_RS2(rs2_delete_sensor_list);
+        ANYGEAR_LOAD_RS2(rs2_get_sensors_count);
+        ANYGEAR_LOAD_RS2(rs2_create_sensor);
+        ANYGEAR_LOAD_RS2(rs2_delete_sensor);
+        ANYGEAR_LOAD_RS2(rs2_is_sensor_extendable_to);
+        ANYGEAR_LOAD_RS2(rs2_get_depth_scale);
+        ANYGEAR_LOAD_RS2(rs2_supports_option);
+        ANYGEAR_LOAD_RS2(rs2_get_option);
+        ANYGEAR_LOAD_RS2(rs2_set_option);
         ANYGEAR_LOAD_RS2(rs2_create_pipeline);
         ANYGEAR_LOAD_RS2(rs2_delete_pipeline);
         ANYGEAR_LOAD_RS2(rs2_pipeline_stop);
@@ -147,6 +168,11 @@ struct RealSenseApi {
             rs2_query_devices && rs2_delete_device_list &&
             rs2_get_device_count && rs2_create_device && rs2_delete_device &&
             rs2_supports_device_info && rs2_get_device_info &&
+            rs2_query_sensors && rs2_delete_sensor_list &&
+            rs2_get_sensors_count && rs2_create_sensor &&
+            rs2_delete_sensor && rs2_is_sensor_extendable_to &&
+            rs2_get_depth_scale && rs2_supports_option &&
+            rs2_get_option && rs2_set_option &&
             rs2_create_pipeline && rs2_delete_pipeline && rs2_pipeline_stop &&
             rs2_pipeline_poll_for_frames && rs2_pipeline_start_with_config &&
             rs2_delete_pipeline_profile && rs2_create_frame_queue &&
@@ -184,46 +210,6 @@ struct RealSenseApi {
     }
 };
 
-void enhance_ir_to_bgr(const std::vector<std::uint8_t>& ir,
-                       std::vector<std::uint8_t>* bgr) {
-    std::array<std::size_t, 256> histogram{};
-    for (const std::uint8_t value : ir) ++histogram[value];
-    const std::size_t low_target = ir.size() / 100;
-    const std::size_t high_target = ir.size() - ir.size() / 100;
-    std::size_t cumulative = 0;
-    int low = 0;
-    int high = 255;
-    for (int value = 0; value < 256; ++value) {
-        cumulative += histogram[static_cast<std::size_t>(value)];
-        if (cumulative >= low_target) {
-            low = value;
-            break;
-        }
-    }
-    cumulative = 0;
-    for (int value = 0; value < 256; ++value) {
-        cumulative += histogram[static_cast<std::size_t>(value)];
-        if (cumulative >= high_target) {
-            high = value;
-            break;
-        }
-    }
-    if (high - low < 24) {
-        low = 0;
-        high = 255;
-    }
-    const int range = std::max(1, high - low);
-    bgr->resize(ir.size() * 3);
-    for (std::size_t index = 0; index < ir.size(); ++index) {
-        const int stretched = std::clamp(
-            (static_cast<int>(ir[index]) - low) * 255 / range, 0, 255);
-        const std::uint8_t value = static_cast<std::uint8_t>(stretched);
-        (*bgr)[index * 3 + 0] = value;
-        (*bgr)[index * 3 + 1] = value;
-        (*bgr)[index * 3 + 2] = value;
-    }
-}
-
 float median_depth(const std::vector<std::uint16_t>& depth, int width,
                    int height, float x, float y, float scale) {
     const int center_x = static_cast<int>(std::lround(x));
@@ -253,18 +239,26 @@ float median_depth(const std::vector<std::uint16_t>& depth, int width,
 
 struct D4xxSource::Impl {
     struct DeviceStream {
+        int configuration_index = -1;
+        bool primary = false;
         std::string name;
         std::string serial;
+        float depth_scale_m = 0.001f;
         rs2_pipeline* pipeline = nullptr;
         rs2_config* config = nullptr;
         rs2_pipeline_profile* profile = nullptr;
         rs2_processing_block* align = nullptr;
         rs2_frame_queue* align_queue = nullptr;
-        bool active = false;
+        std::atomic<bool> active{false};
+        std::chrono::steady_clock::time_point last_complete_frame;
+        std::chrono::steady_clock::time_point next_reconnect;
+        unsigned int reconnect_attempts = 0;
         mutable std::mutex frame_mutex;
         std::vector<std::uint8_t> infrared;
         std::vector<std::uint16_t> depth;
         rs2_intrinsics intrinsics{};
+        std::uint64_t sequence = 0;
+        std::int64_t host_time_ns = 0;
         bool have_intrinsics = false;
         std::atomic<bool> have_infrared{false};
         std::atomic<bool> have_depth{false};
@@ -280,6 +274,7 @@ struct D4xxSource::Impl {
     std::thread worker;
     mutable std::mutex pose_mutex;
     std::vector<std::uint16_t> pending_pose_depth;
+    float pending_pose_depth_scale_m = 0.001f;
     rs2_intrinsics pending_pose_intrinsics{};
     int pending_pose_width = 0;
     int pending_pose_height = 0;
@@ -326,7 +321,174 @@ struct D4xxSource::Impl {
         return value;
     }
 
+    int configured_value(const std::vector<int>& values, int index) const {
+        return index >= 0 && index < static_cast<int>(values.size())
+            ? values[static_cast<std::size_t>(index)]
+            : -1;
+    }
+
+    bool set_sensor_option(rs2_sensor* sensor, rs2_option option,
+                           int requested, const char* name, int device_index,
+                           std::string* output) {
+        if (requested < 0) return true;
+        rs2_error* error = nullptr;
+        const auto* sensor_options =
+            reinterpret_cast<const rs2_options*>(sensor);
+        const int supported = api.rs2_supports_option(
+            sensor_options, option, &error);
+        if (!check(error, "rs2_supports_option", output)) return false;
+        if (!supported) {
+            if (output) {
+                *output = "device " + std::to_string(device_index) +
+                    " does not support " + name;
+            }
+            return false;
+        }
+        api.rs2_set_option(sensor_options, option,
+                           static_cast<float>(requested), &error);
+        if (!check(error, "rs2_set_option", output)) return false;
+        const float actual = api.rs2_get_option(sensor_options, option, &error);
+        if (!check(error, "rs2_get_option", output)) return false;
+        log("device %d %s requested=%d actual=%.0f", device_index, name,
+            requested, actual);
+        return true;
+    }
+
+    void log_sensor_option(rs2_sensor* sensor, rs2_option option,
+                           const char* name, int device_index) {
+        rs2_error* error = nullptr;
+        const auto* sensor_options =
+            reinterpret_cast<const rs2_options*>(sensor);
+        const int supported = api.rs2_supports_option(
+            sensor_options, option, &error);
+        if (error) {
+            log("device %d query %s: %s", device_index, name,
+                api.take_error(error).c_str());
+            return;
+        }
+        if (!supported) return;
+        const float value = api.rs2_get_option(sensor_options, option, &error);
+        if (error) {
+            log("device %d read %s: %s", device_index, name,
+                api.take_error(error).c_str());
+            return;
+        }
+        log("device %d %s=%.3f", device_index, name, value);
+    }
+
+    float configure_device(rs2_device* device, int device_index,
+                           std::string* output) {
+        rs2_error* error = nullptr;
+        rs2_sensor_list* sensors = api.rs2_query_sensors(device, &error);
+        if (!check(error, "rs2_query_sensors", output) || !sensors) {
+            return options.depth_scale_m;
+        }
+        const int count = api.rs2_get_sensors_count(sensors, &error);
+        if (!check(error, "rs2_get_sensors_count", output)) {
+            api.rs2_delete_sensor_list(sensors);
+            return options.depth_scale_m;
+        }
+        float result = options.depth_scale_m;
+        bool configured = true;
+        for (int index = 0; index < count; ++index) {
+            rs2_sensor* sensor = api.rs2_create_sensor(sensors, index, &error);
+            if (!check(error, "rs2_create_sensor", output) || !sensor) {
+                configured = false;
+                break;
+            }
+            const int is_depth = api.rs2_is_sensor_extendable_to(
+                sensor, RS2_EXTENSION_DEPTH_SENSOR, &error);
+            if (!check(error, "rs2_is_sensor_extendable_to", output)) {
+                configured = false;
+                api.rs2_delete_sensor(sensor);
+                break;
+            }
+            if (is_depth) {
+                const float scale = api.rs2_get_depth_scale(sensor, &error);
+                if (check(error, "rs2_get_depth_scale", output) &&
+                    scale > 0.0f) {
+                    result = scale;
+                } else {
+                    configured = false;
+                }
+                if (configured) {
+                    configured = set_sensor_option(
+                        sensor, RS2_OPTION_VISUAL_PRESET,
+                        configured_value(options.visual_preset_by_device,
+                                         device_index),
+                        "visual-preset", device_index, output);
+                }
+                // Disable any prior alternating state before selecting a
+                // fixed emitter state. The explicit alternating mode sets the
+                // enabled state first, then turns alternation back on.
+                const int emitter = configured_value(
+                    options.emitter_enabled_by_device, device_index);
+                const int alternating = configured_value(
+                    options.emitter_on_off_by_device, device_index);
+                if (configured && emitter >= 0 && alternating != 1) {
+                    configured = set_sensor_option(
+                        sensor, RS2_OPTION_EMITTER_ON_OFF, 0,
+                        "emitter-on-off", device_index, output);
+                }
+                if (configured) {
+                    configured = set_sensor_option(
+                        sensor, RS2_OPTION_EMITTER_ENABLED, emitter,
+                        "emitter-enabled", device_index, output);
+                }
+                if (configured) {
+                    configured = set_sensor_option(
+                        sensor, RS2_OPTION_EMITTER_ON_OFF, alternating,
+                        "emitter-on-off", device_index, output);
+                }
+                if (configured) {
+                    log_sensor_option(sensor, RS2_OPTION_VISUAL_PRESET,
+                                      "visual-preset", device_index);
+                    log_sensor_option(sensor, RS2_OPTION_LASER_POWER,
+                                      "laser-power", device_index);
+                    log_sensor_option(sensor, RS2_OPTION_EMITTER_ENABLED,
+                                      "emitter-enabled", device_index);
+                    log_sensor_option(sensor, RS2_OPTION_EMITTER_ON_OFF,
+                                      "emitter-on-off", device_index);
+                    log_sensor_option(sensor, RS2_OPTION_INTER_CAM_SYNC_MODE,
+                                      "inter-cam-sync", device_index);
+                    log_sensor_option(sensor, RS2_OPTION_EXPOSURE,
+                                      "exposure", device_index);
+                    log_sensor_option(sensor, RS2_OPTION_GAIN,
+                                      "gain", device_index);
+                }
+                api.rs2_delete_sensor(sensor);
+                break;
+            }
+            api.rs2_delete_sensor(sensor);
+        }
+        api.rs2_delete_sensor_list(sensors);
+        if (!configured && output && output->empty()) {
+            *output = "could not configure depth sensor for device " +
+                std::to_string(device_index);
+        }
+        return result;
+    }
+
+    void invalidate_device_frames(DeviceStream& device) {
+        device.active.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(device.frame_mutex);
+            device.infrared.clear();
+            device.depth.clear();
+            device.host_time_ns = 0;
+            device.have_intrinsics = false;
+            device.have_infrared.store(false, std::memory_order_release);
+            device.have_depth.store(false, std::memory_order_release);
+        }
+        if (device.primary) {
+            std::lock_guard<std::mutex> lock(pose_mutex);
+            pending_pose_depth.clear();
+            have_pending_pose_depth = false;
+        }
+    }
+
     void cleanup_device(DeviceStream& device) {
+        invalidate_device_frames(device);
         rs2_error* error = nullptr;
         if (device.profile && device.pipeline) {
             api.rs2_pipeline_stop(device.pipeline, &error);
@@ -335,7 +497,6 @@ struct D4xxSource::Impl {
                     api.take_error(error).c_str());
             }
         }
-        device.active = false;
         if (device.align) api.rs2_delete_processing_block(device.align);
         if (device.align_queue) api.rs2_delete_frame_queue(device.align_queue);
         if (device.profile) api.rs2_delete_pipeline_profile(device.profile);
@@ -371,12 +532,15 @@ struct D4xxSource::Impl {
             cleanup_device(stream);
             return false;
         }
-        api.rs2_config_enable_stream(
-            stream.config, RS2_STREAM_INFRARED, options.infrared_index,
-            options.width, options.height, RS2_FORMAT_Y8, options.fps, &error);
-        if (!check(error, "enable infrared stream", output)) {
-            cleanup_device(stream);
-            return false;
+        if (options.enable_infrared) {
+            api.rs2_config_enable_stream(
+                stream.config, RS2_STREAM_INFRARED, options.infrared_index,
+                options.width, options.height, RS2_FORMAT_Y8, options.fps,
+                &error);
+            if (!check(error, "enable infrared stream", output)) {
+                cleanup_device(stream);
+                return false;
+            }
         }
         stream.profile = api.rs2_pipeline_start_with_config(
             stream.pipeline, stream.config, &error);
@@ -384,6 +548,11 @@ struct D4xxSource::Impl {
             !stream.profile) {
             cleanup_device(stream);
             return false;
+        }
+        if (!options.align_depth_to_infrared) {
+            stream.last_complete_frame = std::chrono::steady_clock::now();
+            stream.active.store(true, std::memory_order_release);
+            return true;
         }
         stream.align_queue = api.rs2_create_frame_queue(1, &error);
         if (!check(error, "rs2_create_frame_queue", output) ||
@@ -403,11 +572,95 @@ struct D4xxSource::Impl {
             cleanup_device(stream);
             return false;
         }
-        stream.active = true;
+        stream.last_complete_frame = std::chrono::steady_clock::now();
+        stream.active.store(true, std::memory_order_release);
         return true;
     }
 
+    bool configure_connected_device(DeviceStream& stream,
+                                    std::string* output) {
+        rs2_error* error = nullptr;
+        rs2_device_list* list = api.rs2_query_devices(context, &error);
+        if (!check(error, "rs2_query_devices(reconnect)", output) || !list) {
+            return false;
+        }
+        const int count = api.rs2_get_device_count(list, &error);
+        if (!check(error, "rs2_get_device_count(reconnect)", output)) {
+            api.rs2_delete_device_list(list);
+            return false;
+        }
+        bool found = false;
+        for (int index = 0; index < count; ++index) {
+            rs2_device* device = api.rs2_create_device(list, index, &error);
+            if (!check(error, "rs2_create_device(reconnect)", output) ||
+                !device) {
+                break;
+            }
+            const std::string serial = device_info(
+                device, RS2_CAMERA_INFO_SERIAL_NUMBER);
+            if (serial == stream.serial) {
+                std::string configure_error;
+                stream.depth_scale_m = configure_device(
+                    device, stream.configuration_index, &configure_error);
+                api.rs2_delete_device(device);
+                if (!configure_error.empty()) {
+                    if (output) *output = configure_error;
+                    api.rs2_delete_device_list(list);
+                    return false;
+                }
+                found = true;
+                break;
+            }
+            api.rs2_delete_device(device);
+        }
+        api.rs2_delete_device_list(list);
+        if (!found && output && output->empty()) {
+            *output = "serial " + stream.serial + " is not connected";
+        }
+        return found;
+    }
+
+    void make_device_unavailable(DeviceStream& stream,
+                                 const std::string& reason) {
+        cleanup_device(stream);
+        ++stream.reconnect_attempts;
+        stream.next_reconnect = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(options.reconnect_delay_ms);
+        log("device %s unavailable: %s; reconnect in %d ms",
+            stream.serial.c_str(), reason.c_str(),
+            options.reconnect_delay_ms);
+    }
+
+    bool reconnect_device(DeviceStream& stream) {
+        std::string error;
+        if (configure_connected_device(stream, &error) &&
+            start_device(stream, &error)) {
+            log("device %s pipeline restarted on attempt %u",
+                stream.serial.c_str(), stream.reconnect_attempts);
+            return true;
+        }
+        ++stream.reconnect_attempts;
+        stream.next_reconnect = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(options.reconnect_delay_ms);
+        log("device %s reconnect attempt %u failed: %s; retry in %d ms",
+            stream.serial.c_str(), stream.reconnect_attempts,
+            error.empty() ? "unknown librealsense error" : error.c_str(),
+            options.reconnect_delay_ms);
+        return false;
+    }
+
     bool open(std::string* output) {
+        options.frame_stall_timeout_ms = std::clamp(
+            options.frame_stall_timeout_ms, 100, 60000);
+        options.reconnect_delay_ms = std::clamp(
+            options.reconnect_delay_ms, 50, 60000);
+        if (options.align_depth_to_infrared && !options.enable_infrared) {
+            if (output) {
+                *output = "depth-to-infrared alignment requires the "
+                    "infrared stream";
+            }
+            return false;
+        }
         if (!api.load(options.runtime_path, output)) return false;
 
         rs2_error* error = nullptr;
@@ -430,15 +683,25 @@ struct D4xxSource::Impl {
             rs2_device* device = api.rs2_create_device(list, index, &error);
             if (!check(error, "rs2_create_device", output) || !device) break;
             auto stream = std::make_unique<DeviceStream>();
+            stream->configuration_index = index;
             stream->name = device_info(device, RS2_CAMERA_INFO_NAME);
             stream->serial = device_info(device, RS2_CAMERA_INFO_SERIAL_NUMBER);
+            std::string configure_error;
+            stream->depth_scale_m = configure_device(
+                device, index, &configure_error);
             api.rs2_delete_device(device);
+            if (!configure_error.empty()) {
+                if (output) *output = configure_error;
+                api.rs2_delete_device_list(list);
+                return false;
+            }
             if (stream->serial.empty()) {
                 log("device %d has no serial number; skipped", index);
                 continue;
             }
-            log("device %d: %s serial=%s", index, stream->name.c_str(),
-                stream->serial.c_str());
+            log("device %d: %s serial=%s depth-scale=%.9fm", index,
+                stream->name.c_str(), stream->serial.c_str(),
+                stream->depth_scale_m);
             devices.push_back(std::move(stream));
         }
         api.rs2_delete_device_list(list);
@@ -472,16 +735,25 @@ struct D4xxSource::Impl {
             if (output) *output = "primary D4xx device index is out of range";
             return false;
         }
+        devices[static_cast<std::size_t>(options.primary_device)]->primary = true;
+        log("transport recovery: stale after %d ms, reconnect every %d ms",
+            options.frame_stall_timeout_ms, options.reconnect_delay_ms);
 
         int active = 0;
         for (auto& stream : devices) {
             std::string start_error;
             if (start_device(*stream, &start_error)) {
                 ++active;
-                log("streaming %s: depth Z16 + infrared Y8, %dx%d@%d",
-                    stream->serial.c_str(), options.width, options.height,
-                    options.fps);
+                log("streaming %s: %s, %dx%d@%d",
+                    stream->serial.c_str(),
+                    options.enable_infrared
+                        ? "depth Z16 + infrared Y8"
+                        : "depth Z16 only",
+                    options.width, options.height, options.fps);
             } else {
+                stream->reconnect_attempts = 1;
+                stream->next_reconnect = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(options.reconnect_delay_ms);
                 log("device %s failed: %s", stream->serial.c_str(),
                     start_error.c_str());
             }
@@ -499,13 +771,14 @@ struct D4xxSource::Impl {
         return true;
     }
 
-    void capture_frame(DeviceStream& stream, rs2_frame* composite) {
+    bool capture_frame(DeviceStream& stream, rs2_frame* composite) {
         rs2_error* error = nullptr;
         const int count = api.rs2_embedded_frames_count(composite, &error);
-        if (!check(error, "rs2_embedded_frames_count")) return;
+        if (!check(error, "rs2_embedded_frames_count")) return false;
         std::vector<std::uint8_t> infrared;
         std::vector<std::uint16_t> depth;
         rs2_intrinsics infrared_intrinsics{};
+        rs2_intrinsics depth_intrinsics{};
         int infrared_width = 0;
         int infrared_height = 0;
         int depth_width = 0;
@@ -513,6 +786,7 @@ struct D4xxSource::Impl {
         bool have_infrared = false;
         bool have_depth = false;
         bool have_intrinsics = false;
+        bool have_depth_intrinsics = false;
         for (int index = 0; index < count; ++index) {
             rs2_frame* frame = api.rs2_extract_frame(composite, index, &error);
             if (!check(error, "rs2_extract_frame") || !frame) continue;
@@ -557,7 +831,8 @@ struct D4xxSource::Impl {
                 continue;
             }
 
-            if (stream_type == RS2_STREAM_INFRARED &&
+            if (options.enable_infrared &&
+                stream_type == RS2_STREAM_INFRARED &&
                 stream_index == options.infrared_index &&
                 format == RS2_FORMAT_Y8) {
                 std::vector<std::uint8_t> copy(
@@ -596,25 +871,45 @@ struct D4xxSource::Impl {
                 depth_width = width;
                 depth_height = height;
                 have_depth = true;
+                rs2_intrinsics intrinsics{};
+                api.rs2_get_video_stream_intrinsics(profile, &intrinsics, &error);
+                if (check(error, "rs2_get_video_stream_intrinsics(depth)")) {
+                    depth_intrinsics = intrinsics;
+                    have_depth_intrinsics = true;
+                }
             }
             api.rs2_release_frame(frame);
         }
-        if (!have_infrared || !have_depth || !have_intrinsics ||
-            infrared_width != depth_width ||
-            infrared_height != depth_height) {
-            return;
+        if (!have_depth ||
+            (options.enable_infrared &&
+             (!have_infrared || infrared_width != depth_width ||
+              infrared_height != depth_height)) ||
+            (options.align_depth_to_infrared && !have_intrinsics) ||
+            (!options.align_depth_to_infrared && !have_depth_intrinsics)) {
+            return false;
         }
         // Publish one complete aligned frameset. Readers can no longer observe
         // a new IR frame paired with the preceding depth frame.
         std::lock_guard<std::mutex> lock(stream.frame_mutex);
-        stream.infrared.swap(infrared);
+        if (options.enable_infrared) stream.infrared.swap(infrared);
+        else stream.infrared.clear();
         stream.depth.swap(depth);
-        stream.intrinsics = infrared_intrinsics;
-        stream.width = infrared_width;
-        stream.height = infrared_height;
+        stream.intrinsics = options.align_depth_to_infrared
+            ? infrared_intrinsics
+            : depth_intrinsics;
+        ++stream.sequence;
+        stream.host_time_ns = std::chrono::duration_cast<
+            std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                                  .count();
+        stream.width = options.enable_infrared
+            ? infrared_width : depth_width;
+        stream.height = options.enable_infrared
+            ? infrared_height : depth_height;
         stream.have_intrinsics = true;
-        stream.have_infrared = true;
+        stream.have_infrared = options.enable_infrared;
         stream.have_depth = true;
+        return true;
     }
 
     bool align_frame(DeviceStream& stream, rs2_frame* input,
@@ -639,24 +934,53 @@ struct D4xxSource::Impl {
         while (!stop) {
             bool received = false;
             for (auto& device : devices) {
-                if (!device->active) continue;
+                const auto now = std::chrono::steady_clock::now();
+                if (!device->active.load(std::memory_order_acquire)) {
+                    if (now >= device->next_reconnect) {
+                        reconnect_device(*device);
+                    }
+                    continue;
+                }
                 rs2_frame* frames = nullptr;
                 rs2_error* error = nullptr;
                 const int available = api.rs2_pipeline_poll_for_frames(
                     device->pipeline, &frames, &error);
                 if (error) {
-                    log("poll %s: %s", device->serial.c_str(),
-                        api.take_error(error).c_str());
+                    const std::string detail = api.take_error(error);
+                    make_device_unavailable(
+                        *device, "frame poll failed: " + detail);
                     continue;
                 }
                 if (available && frames) {
-                    rs2_frame* aligned = nullptr;
-                    if (align_frame(*device, frames, &aligned)) {
-                        capture_frame(*device, aligned);
-                        api.rs2_release_frame(aligned);
+                    bool published = false;
+                    if (options.align_depth_to_infrared) {
+                        rs2_frame* aligned = nullptr;
+                        if (align_frame(*device, frames, &aligned)) {
+                            published = capture_frame(*device, aligned);
+                            api.rs2_release_frame(aligned);
+                        }
+                    } else {
+                        published = capture_frame(*device, frames);
                     }
                     api.rs2_release_frame(frames);
-                    received = true;
+                    if (published) {
+                        device->last_complete_frame = now;
+                        if (device->reconnect_attempts != 0) {
+                            log("device %s resumed complete frames",
+                                device->serial.c_str());
+                            device->reconnect_attempts = 0;
+                        }
+                        received = true;
+                    }
+                }
+                if (device->active.load(std::memory_order_acquire) &&
+                    now - device->last_complete_frame >=
+                        std::chrono::milliseconds(
+                            options.frame_stall_timeout_ms)) {
+                    make_device_unavailable(
+                        *device, "no complete frame for " +
+                            std::to_string(options.frame_stall_timeout_ms) +
+                            " ms");
                 }
             }
             if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -696,7 +1020,10 @@ bool D4xxSource::wait_until_ready(int timeout_ms) const {
     while (std::chrono::steady_clock::now() < deadline) {
         const int primary = impl_->options.primary_device;
         if (primary >= 0 && primary < static_cast<int>(impl_->devices.size()) &&
-            impl_->devices[static_cast<std::size_t>(primary)]->have_infrared &&
+            impl_->devices[static_cast<std::size_t>(primary)]->active.load(
+                std::memory_order_acquire) &&
+            (!impl_->options.enable_infrared ||
+             impl_->devices[static_cast<std::size_t>(primary)]->have_infrared) &&
             impl_->devices[static_cast<std::size_t>(primary)]->have_depth) {
             return true;
         }
@@ -713,6 +1040,10 @@ bool D4xxSource::get_frame_bgr8(std::vector<std::uint8_t>& out,
         return false;
     }
     const auto& stream = impl_->devices[static_cast<std::size_t>(primary)];
+    if (!stream->active.load(std::memory_order_acquire)) {
+        out.clear();
+        return false;
+    }
     std::vector<std::uint8_t> infrared;
     int source_width = 0;
     int source_height = 0;
@@ -727,7 +1058,9 @@ bool D4xxSource::get_frame_bgr8(std::vector<std::uint8_t>& out,
         source_height = stream->height;
     }
     std::vector<std::uint8_t> native_bgr;
-    enhance_ir_to_bgr(infrared, &native_bgr);
+    anygear::d4xx::ir_y8_to_bgr24(
+        infrared.data(), infrared.size(), source_width, source_height,
+        source_width, {}, &native_bgr);
     if (source_width == width && source_height == height) {
         out.swap(native_bgr);
     } else {
@@ -746,9 +1079,14 @@ bool D4xxSource::get_pose_frame_bgr8(std::vector<std::uint8_t>& out,
         return false;
     }
     const auto& stream = impl_->devices[static_cast<std::size_t>(primary)];
+    if (!stream->active.load(std::memory_order_acquire)) {
+        out.clear();
+        return false;
+    }
     std::vector<std::uint8_t> infrared;
     std::vector<std::uint16_t> depth;
     rs2_intrinsics intrinsics{};
+    float depth_scale_m = impl_->options.depth_scale_m;
     int source_width = 0;
     int source_height = 0;
     {
@@ -762,6 +1100,7 @@ bool D4xxSource::get_pose_frame_bgr8(std::vector<std::uint8_t>& out,
         infrared = stream->infrared;
         depth = stream->depth;
         intrinsics = stream->intrinsics;
+        depth_scale_m = stream->depth_scale_m;
         source_width = stream->width;
         source_height = stream->height;
     }
@@ -773,7 +1112,9 @@ bool D4xxSource::get_pose_frame_bgr8(std::vector<std::uint8_t>& out,
     }
 
     std::vector<std::uint8_t> native_bgr;
-    enhance_ir_to_bgr(infrared, &native_bgr);
+    anygear::d4xx::ir_y8_to_bgr24(
+        infrared.data(), infrared.size(), source_width, source_height,
+        source_width, {}, &native_bgr);
     if (source_width == width && source_height == height) {
         out.swap(native_bgr);
     } else {
@@ -786,6 +1127,7 @@ bool D4xxSource::get_pose_frame_bgr8(std::vector<std::uint8_t>& out,
     // packet alive while MediaPipe works; preview reads cannot replace it.
     std::lock_guard<std::mutex> pose_lock(impl_->pose_mutex);
     impl_->pending_pose_depth.swap(depth);
+    impl_->pending_pose_depth_scale_m = depth_scale_m;
     impl_->pending_pose_intrinsics = intrinsics;
     impl_->pending_pose_width = source_width;
     impl_->pending_pose_height = source_height;
@@ -804,6 +1146,7 @@ bool D4xxSource::apply_depth_to_pose(PoseResult* pose) {
     const auto& stream = impl_->devices[static_cast<std::size_t>(primary)];
     std::vector<std::uint16_t> depth;
     rs2_intrinsics intrinsics{};
+    float depth_scale_m = impl_->options.depth_scale_m;
     int width = 0;
     int height = 0;
     int pixel_width = 0;
@@ -812,6 +1155,7 @@ bool D4xxSource::apply_depth_to_pose(PoseResult* pose) {
         std::lock_guard<std::mutex> pose_lock(impl_->pose_mutex);
         if (impl_->have_pending_pose_depth) {
             depth.swap(impl_->pending_pose_depth);
+            depth_scale_m = impl_->pending_pose_depth_scale_m;
             intrinsics = impl_->pending_pose_intrinsics;
             width = impl_->pending_pose_width;
             height = impl_->pending_pose_height;
@@ -823,11 +1167,13 @@ bool D4xxSource::apply_depth_to_pose(PoseResult* pose) {
     if (depth.empty()) {
         // Retain compatibility for callers that only request preview frames.
         std::lock_guard<std::mutex> lock(stream->frame_mutex);
-        if (!stream->have_depth || !stream->have_intrinsics ||
+        if (!stream->active.load(std::memory_order_acquire) ||
+            !stream->have_depth || !stream->have_intrinsics ||
             stream->depth.empty()) {
             return false;
         }
         depth = stream->depth;
+        depth_scale_m = stream->depth_scale_m;
         intrinsics = stream->intrinsics;
         width = stream->width;
         height = stream->height;
@@ -849,7 +1195,7 @@ bool D4xxSource::apply_depth_to_pose(PoseResult* pose) {
             static_cast<float>(std::max(1, pixel_height));
         const float z = median_depth(
             depth, width, height, depth_x, depth_y,
-            impl_->options.depth_scale_m);
+            depth_scale_m);
         if (z <= 0.0f) continue;
         const float x =
             (depth_x - intrinsics.ppx) / intrinsics.fx * z;
@@ -1003,6 +1349,40 @@ bool D4xxSource::apply_depth_to_pose(PoseResult* pose) {
     return true;
 }
 
+bool D4xxSource::get_depth_frame(int device_index,
+                                 std::uint64_t after_sequence,
+                                 D4xxDepthFrame* out) const {
+    if (!out || device_index < 0 ||
+        device_index >= static_cast<int>(impl_->devices.size())) {
+        return false;
+    }
+    const auto& stream = impl_->devices[static_cast<std::size_t>(device_index)];
+    std::lock_guard<std::mutex> lock(stream->frame_mutex);
+    if (!stream->active.load(std::memory_order_acquire) ||
+        !stream->have_depth || !stream->have_intrinsics ||
+        stream->depth.empty() || stream->sequence <= after_sequence) {
+        return false;
+    }
+    out->device_index = device_index;
+    out->serial = stream->serial;
+    out->sequence = stream->sequence;
+    out->host_time_ns = stream->host_time_ns;
+    out->depth_scale_m = stream->depth_scale_m;
+    out->intrinsics.width = stream->width;
+    out->intrinsics.height = stream->height;
+    out->intrinsics.principal_x = stream->intrinsics.ppx;
+    out->intrinsics.principal_y = stream->intrinsics.ppy;
+    out->intrinsics.focal_x = stream->intrinsics.fx;
+    out->intrinsics.focal_y = stream->intrinsics.fy;
+    out->intrinsics.distortion_model =
+        static_cast<int>(stream->intrinsics.model);
+    std::copy(std::begin(stream->intrinsics.coeffs),
+              std::end(stream->intrinsics.coeffs),
+              std::begin(out->intrinsics.distortion));
+    out->depth = stream->depth;
+    return true;
+}
+
 int D4xxSource::device_count() const {
     return static_cast<int>(impl_->devices.size());
 }
@@ -1011,7 +1391,7 @@ int D4xxSource::active_device_count() const {
     return static_cast<int>(std::count_if(
         impl_->devices.begin(), impl_->devices.end(),
         [](const std::unique_ptr<Impl::DeviceStream>& value) {
-            return value->active;
+            return value->active.load(std::memory_order_acquire);
         }));
 }
 

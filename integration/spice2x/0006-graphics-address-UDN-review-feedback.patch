@@ -1,0 +1,661 @@
+From f9050737ab1f79a02784dc200d4d093a1f65b3aa Mon Sep 17 00:00:00 2001
+From: Avimitin <dev@avimit.in>
+Date: Sat, 29 Aug 2026 19:05:46 +0800
+Subject: [PATCH 6/7] graphics: address UDN review feedback
+
+Move the UDN-specific window policy into its own graphics module, use the shared system clock helper, and clarify the WinMM rationale.
+
+Co-authored-by: Codex <codex@openai.com>
+---
+ src/spice2x/CMakeLists.txt                    |   1 +
+ src/spice2x/games/udn/udn.cpp                 |   7 +-
+ .../backends/d3d11/d3d11_swapchain.cpp        |  21 +-
+ src/spice2x/hooks/graphics/graphics.cpp       | 219 +----------------
+ src/spice2x/hooks/graphics/graphics.h         |   4 +-
+ src/spice2x/hooks/graphics/graphics_udn.cpp   | 225 ++++++++++++++++++
+ src/spice2x/hooks/graphics/graphics_udn.h     |  11 +
+ 7 files changed, 266 insertions(+), 222 deletions(-)
+ create mode 100644 src/spice2x/hooks/graphics/graphics_udn.cpp
+ create mode 100644 src/spice2x/hooks/graphics/graphics_udn.h
+
+diff --git a/src/spice2x/CMakeLists.txt b/src/spice2x/CMakeLists.txt
+index 589baac..7bf0f2d 100644
+--- a/src/spice2x/CMakeLists.txt
++++ b/src/spice2x/CMakeLists.txt
+@@ -591,6 +591,7 @@ set(SOURCE_FILES ${SOURCE_FILES}
+         hooks/debughook.cpp
+         hooks/devicehook.cpp
+         hooks/graphics/graphics.cpp
++        hooks/graphics/graphics_udn.cpp
+         hooks/graphics/graphics_windowed.cpp
+         hooks/graphics/jpeg_encoder.cpp
+         hooks/graphics/nvapi_impl.cpp
+diff --git a/src/spice2x/games/udn/udn.cpp b/src/spice2x/games/udn/udn.cpp
+index 0b35f99..31f430c 100644
+--- a/src/spice2x/games/udn/udn.cpp
++++ b/src/spice2x/games/udn/udn.cpp
+@@ -244,10 +244,9 @@ namespace games::udn {
+     }
+ 
+     void UDNGame::pre_attach() {
+-        // The title has no MIDI controls. In the cabinet compatibility profile the
+-        // legacy WinMM provider can fault in MMDevAPI while Unity and its audio
+-        // backend initialize concurrently, so leave that unrelated subsystem
+-        // unopened.
++        // The title has no MIDI controls. The legacy WinMM provider can fault in
++        // MMDevAPI while Unity and its audio backend initialize concurrently, so
++        // leave that unrelated subsystem unopened.
+         rawinput::DISABLE_MIDI = true;
+     }
+ 
+diff --git a/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp b/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp
+index 32e8ebc..820b591 100644
+--- a/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp
++++ b/src/spice2x/hooks/graphics/backends/d3d11/d3d11_swapchain.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cstdint>
+ #include <mutex>
+ 
+ #include <windows.h>
+@@ -26,6 +27,8 @@
+ #include "overlay/imgui/impl_spice.h"
+ 
+ #include "hooks/graphics/graphics.h"
++#include "hooks/graphics/graphics_udn.h"
++#include "util/time.h"
+ #include "util/utils.h"
+ 
+ // --------------------------------------------------------------------------
+@@ -116,8 +119,8 @@ bool g_set_fullscreen_hooked = false;
+ bool g_resize_target_hooked = false;
+ bool g_swapchain1_hooked = false;
+ constexpr UINT DXGI_PRESENT_ALLOW_TEARING_FLAG = 0x00000200u;
+-std::atomic<ULONGLONG> g_forced_present_window_start {0};
+-std::atomic<ULONGLONG> g_forced_present_count {0};
++std::atomic<uint64_t> g_forced_present_window_start {0};
++std::atomic<uint64_t> g_forced_present_count {0};
+ std::atomic<bool> g_forced_present_announced {false};
+ 
+ // Unity creates and owns its top-level window on a different thread from the
+@@ -130,7 +133,7 @@ std::mutex g_window_attach_mutex;
+ HHOOK g_window_attach_hook = nullptr;
+ HWND g_window_attach_target = nullptr;
+ bool g_window_attach_complete = false;
+-std::atomic<ULONGLONG> g_window_enforce_last_post {0};
++std::atomic<uint64_t> g_window_enforce_last_post {0};
+ 
+ UINT window_attach_message() {
+     static const UINT message = RegisterWindowMessageW(
+@@ -145,24 +148,24 @@ void track_forced_present(UINT interval) {
+                  interval);
+     }
+ 
+-    const ULONGLONG now = GetTickCount64();
++    const uint64_t now = get_system_milliseconds();
+     g_forced_present_count.fetch_add(1, std::memory_order_relaxed);
+ 
+-    ULONGLONG start = g_forced_present_window_start.load(std::memory_order_relaxed);
++    uint64_t start = g_forced_present_window_start.load(std::memory_order_relaxed);
+     if (start == 0) {
+         g_forced_present_window_start.compare_exchange_strong(
+                 start, now, std::memory_order_relaxed);
+         return;
+     }
+ 
+-    const ULONGLONG elapsed_ms = now - start;
++    const uint64_t elapsed_ms = now - start;
+     if (elapsed_ms < 10000 ||
+         !g_forced_present_window_start.compare_exchange_strong(
+                 start, now, std::memory_order_relaxed)) {
+         return;
+     }
+ 
+-    const ULONGLONG frames =
++    const uint64_t frames =
+             g_forced_present_count.exchange(0, std::memory_order_relaxed);
+     const double present_rate = static_cast<double>(frames) * 1000.0 /
+                                 static_cast<double>(elapsed_ms);
+@@ -328,8 +331,8 @@ void schedule_udn_window_enforce(IDXGISwapChain *swapchain) {
+         }
+     }
+ 
+-    const ULONGLONG now = GetTickCount64();
+-    ULONGLONG previous = g_window_enforce_last_post.load(std::memory_order_relaxed);
++    const uint64_t now = get_system_milliseconds();
++    uint64_t previous = g_window_enforce_last_post.load(std::memory_order_relaxed);
+     if (now - previous < 500 ||
+         !g_window_enforce_last_post.compare_exchange_strong(
+             previous, now, std::memory_order_relaxed)) {
+diff --git a/src/spice2x/hooks/graphics/graphics.cpp b/src/spice2x/hooks/graphics/graphics.cpp
+index 5598c75..1236c3e 100644
+--- a/src/spice2x/hooks/graphics/graphics.cpp
++++ b/src/spice2x/hooks/graphics/graphics.cpp
+@@ -4,6 +4,7 @@
+ #include <initguid.h>
+ 
+ #include "graphics.h"
++#include "graphics_udn.h"
+ 
+ #include <chrono>
+ #include <set>
+@@ -146,6 +147,14 @@ static decltype(SetWindowPos) *SetWindowPos_orig = nullptr;
+ static decltype(ShowWindow) *ShowWindow_orig = nullptr;
+ static decltype(SetDisplayConfig) *SetDisplayConfig_addr = nullptr;
+ 
++BOOL graphics_set_window_pos(
++        HWND hWnd, HWND hWndInsertAfter, int x, int y, int width, int height, UINT flags) {
++    const auto set_window_pos = SetWindowPos_orig != nullptr
++        ? SetWindowPos_orig
++        : SetWindowPos;
++    return set_window_pos(hWnd, hWndInsertAfter, x, y, width, height, flags);
++}
++
+ static void reset_window_hook(HWND hWnd) {
+     overlay::destroy(hWnd);
+ 
+@@ -387,195 +396,13 @@ static void gitadora_force_window_style(HWND hWnd) {
+         style_ex);
+ }
+ 
+-static bool UDN_INTERACTIVE_WINDOW_RESIZE = false;
+-
+-UINT graphics_udn_enforce_message() {
+-    static const UINT message = RegisterWindowMessageW(
+-        L"SpiceTools.UDN.EnforceWindow");
+-    return message;
+-}
+-
+-static bool udn_get_target_window_rect(HWND hWnd, RECT &target) {
+-    if (!GRAPHICS_WINDOWED || !avs::game::is_model("UDN") ||
+-        !GRAPHICS_WINDOW_SIZE.has_value()) {
+-        return false;
+-    }
+-
+-    const DWORD style =
+-        ((DWORD) GetWindowLongPtrW(hWnd, GWL_STYLE) |
+-         WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_POPUP;
+-    const DWORD ex_style = (DWORD) GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+-    RECT frame {
+-        0,
+-        0,
+-        (LONG) GRAPHICS_WINDOW_SIZE->first,
+-        (LONG) GRAPHICS_WINDOW_SIZE->second,
+-    };
+-    AdjustWindowRectEx(&frame, style, GetMenu(hWnd) != nullptr, ex_style);
+-    const int outer_width = frame.right - frame.left;
+-    const int outer_height = frame.bottom - frame.top;
+-
+-    // graphics_load_windowed_parameters initializes these from -windowpos,
+-    // while WM_MOVE keeps them synchronized after an interactive drag.
+-    const int x = cfg::SCREENRESIZE->window_offset_x;
+-    const int y = cfg::SCREENRESIZE->window_offset_y;
+-    target = {x, y, x + outer_width, y + outer_height};
+-    return true;
+-}
+-
+-void graphics_udn_force_window(HWND hWnd) {
+-    if (UDN_INTERACTIVE_WINDOW_RESIZE ||
+-        !GRAPHICS_HOOKED_WINDOW.has_value() ||
+-        hWnd != GRAPHICS_HOOKED_WINDOW.value()) {
+-        return;
+-    }
+-
+-    RECT target {};
+-    RECT current {};
+-    RECT client {};
+-    if (!udn_get_target_window_rect(hWnd, target) ||
+-        !GetWindowRect(hWnd, &current) || !GetClientRect(hWnd, &client)) {
+-        return;
+-    }
+-
+-    const DWORD style_before = (DWORD) GetWindowLongPtrW(hWnd, GWL_STYLE);
+-    const DWORD style_after =
+-        (style_before | WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_POPUP;
+-    const int target_client_width = (int) GRAPHICS_WINDOW_SIZE->first;
+-    const int target_client_height = (int) GRAPHICS_WINDOW_SIZE->second;
+-    const bool wrong = IsZoomed(hWnd) || style_before != style_after ||
+-        current.left != target.left || current.top != target.top ||
+-        current.right != target.right || current.bottom != target.bottom ||
+-        client.right - client.left != target_client_width ||
+-        client.bottom - client.top != target_client_height;
+-    if (!wrong) {
+-        return;
+-    }
+-
+-    // This function is invoked from the window's own message-queue hook. It is
+-    // therefore safe to restore, restyle, and resize without blocking Unity's
+-    // render thread.
+-    if (IsZoomed(hWnd)) {
+-        ShowWindow(hWnd, SW_RESTORE);
+-    }
+-    if (style_before != style_after) {
+-        SetWindowLongPtrW(hWnd, GWL_STYLE, (LONG_PTR) style_after);
+-    }
+-    const auto set_window_pos = SetWindowPos_orig != nullptr
+-        ? SetWindowPos_orig
+-        : SetWindowPos;
+-    set_window_pos(
+-        hWnd,
+-        HWND_NOTOPMOST,
+-        target.left,
+-        target.top,
+-        target.right - target.left,
+-        target.bottom - target.top,
+-        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+-    log_info(
+-        "graphics",
+-        "UDN owner-thread window restored: client {}x{}, outer {}x{} at ({}, {})",
+-        target_client_width,
+-        target_client_height,
+-        target.right - target.left,
+-        target.bottom - target.top,
+-        target.left,
+-        target.top);
+-}
+-
+-static void udn_constrain_window_message(
+-        HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+-    if (!GRAPHICS_WINDOWED || !avs::game::is_model("UDN") ||
+-        !GRAPHICS_HOOKED_WINDOW.has_value() ||
+-        hWnd != GRAPHICS_HOOKED_WINDOW.value()) {
+-        return;
+-    }
+-
+-    if (uMsg == WM_ENTERSIZEMOVE) {
+-        UDN_INTERACTIVE_WINDOW_RESIZE = true;
+-        return;
+-    }
+-    if (uMsg == WM_EXITSIZEMOVE) {
+-        UDN_INTERACTIVE_WINDOW_RESIZE = false;
+-        RECT client {};
+-        if (GetClientRect(hWnd, &client) && GRAPHICS_WINDOW_SIZE.has_value()) {
+-            GRAPHICS_WINDOW_SIZE = std::make_pair(
+-                (uint32_t) std::max(1L, client.right - client.left),
+-                (uint32_t) std::max(1L, client.bottom - client.top));
+-        }
+-        return;
+-    }
+-
+-    if (uMsg == WM_STYLECHANGING &&
+-        wParam == static_cast<WPARAM>(GWL_STYLE) && lParam != 0) {
+-        auto styles = reinterpret_cast<STYLESTRUCT *>(lParam);
+-        styles->styleNew =
+-            (styles->styleNew | WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_POPUP;
+-        return;
+-    }
+-
+-    if (uMsg != WM_WINDOWPOSCHANGING || lParam == 0 ||
+-        UDN_INTERACTIVE_WINDOW_RESIZE || !GRAPHICS_WINDOW_SIZE.has_value()) {
+-        return;
+-    }
+-
+-    auto position = reinterpret_cast<WINDOWPOS *>(lParam);
+-    const bool moves = (position->flags & SWP_NOMOVE) == 0;
+-    const bool resizes = (position->flags & SWP_NOSIZE) == 0;
+-    if (!moves && !resizes) {
+-        return;
+-    }
+-
+-    RECT target {};
+-    if (!udn_get_target_window_rect(hWnd, target)) {
+-        return;
+-    }
+-    const int client_width = (int) GRAPHICS_WINDOW_SIZE->first;
+-    const int client_height = (int) GRAPHICS_WINDOW_SIZE->second;
+-    const int outer_width = target.right - target.left;
+-    const int outer_height = target.bottom - target.top;
+-    const int target_x = target.left;
+-    const int target_y = target.top;
+-
+-    const bool changed =
+-        position->x != target_x || position->y != target_y ||
+-        position->cx != outer_width || position->cy != outer_height;
+-    position->flags &= ~(SWP_NOMOVE | SWP_NOSIZE);
+-    position->x = target_x;
+-    position->y = target_y;
+-    position->cx = outer_width;
+-    position->cy = outer_height;
+-
+-    static ULONGLONG last_log = 0;
+-    const ULONGLONG now = GetTickCount64();
+-    if (changed && now - last_log >= 1000) {
+-        last_log = now;
+-        log_info(
+-            "graphics",
+-            "UDN owner-thread window clamp: client {}x{}, outer {}x{} at ({}, {})",
+-            client_width,
+-            client_height,
+-            outer_width,
+-            outer_height,
+-            target_x,
+-            target_y);
+-    }
+-}
+-
+ // window procedure
+ static LRESULT CALLBACK WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+ 
+-    if (uMsg == graphics_udn_enforce_message()) {
+-        graphics_udn_force_window(hWnd);
++    if (graphics_udn_wndproc(hWnd, uMsg, wParam, lParam)) {
+         return 0;
+     }
+ 
+-    // Unity's managed Screen/GameScreen code can restore its cabinet or
+-    // borderless desktop rect after D3D has initialized. This runs on the HWND
+-    // owner thread and can safely constrain the pending style/placement before
+-    // Windows applies it.
+-    udn_constrain_window_message(hWnd, uMsg, wParam, lParam);
+-
+     // terminate
+     if (uMsg == WM_CLOSE) {
+         log_info("graphics", "detected WM_CLOSE, terminating...");
+@@ -1199,18 +1026,7 @@ static BOOL WINAPI MoveWindow_hook(HWND hWnd, int X, int Y, int nWidth, int nHei
+         return TRUE;
+     }
+ 
+-    // The host may repeatedly restore the cabinet's
+-    // very tall portrait rect. Keep the current Spice/user client rect instead;
+-    // WM_MOVE/WM_SIZE continuously update these values when the user drags or
+-    // resizes the window.
+-    if (GRAPHICS_WINDOWED && avs::game::is_model("UDN") &&
+-        GRAPHICS_HOOKED_WINDOW.has_value() && hWnd == GRAPHICS_HOOKED_WINDOW.value() &&
+-        cfg::SCREENRESIZE != nullptr && cfg::SCREENRESIZE->enable_window_resize) {
+-        X = cfg::SCREENRESIZE->window_offset_x;
+-        Y = cfg::SCREENRESIZE->window_offset_y;
+-        nWidth = cfg::SCREENRESIZE->client_width + cfg::SCREENRESIZE->window_deco_width;
+-        nHeight = cfg::SCREENRESIZE->client_height + cfg::SCREENRESIZE->window_deco_height;
+-    }
++    graphics_udn_adjust_move_window(hWnd, X, Y, nWidth, nHeight);
+ 
+     // call original
+     return MoveWindow_orig(hWnd, X, Y, nWidth, nHeight, bRepaint);
+@@ -1345,18 +1161,7 @@ static BOOL WINAPI SetWindowPos_hook(HWND hWnd, HWND hWndInsertAfter,
+         return TRUE;
+     }
+ 
+-    if (GRAPHICS_WINDOWED && avs::game::is_model("UDN") &&
+-        GRAPHICS_HOOKED_WINDOW.has_value() && hWnd == GRAPHICS_HOOKED_WINDOW.value() &&
+-        cfg::SCREENRESIZE != nullptr && cfg::SCREENRESIZE->enable_window_resize) {
+-        if ((uFlags & SWP_NOMOVE) == 0) {
+-            X = cfg::SCREENRESIZE->window_offset_x;
+-            Y = cfg::SCREENRESIZE->window_offset_y;
+-        }
+-        if ((uFlags & SWP_NOSIZE) == 0) {
+-            cx = cfg::SCREENRESIZE->client_width + cfg::SCREENRESIZE->window_deco_width;
+-            cy = cfg::SCREENRESIZE->client_height + cfg::SCREENRESIZE->window_deco_height;
+-        }
+-    }
++    graphics_udn_adjust_set_window_pos(hWnd, X, Y, cx, cy, uFlags);
+ 
+     // call original
+     return SetWindowPos_orig(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
+diff --git a/src/spice2x/hooks/graphics/graphics.h b/src/spice2x/hooks/graphics/graphics.h
+index d1b51e6..06a58d9 100644
+--- a/src/spice2x/hooks/graphics/graphics.h
++++ b/src/spice2x/hooks/graphics/graphics.h
+@@ -122,8 +122,8 @@ extern bool D3D9_DEVICE_HOOK_DISABLE;
+ 
+ void graphics_init();
+ void graphics_hook_window(HWND hWnd, D3DPRESENT_PARAMETERS *pPresentationParameters);
+-UINT graphics_udn_enforce_message();
+-void graphics_udn_force_window(HWND hWnd);
++BOOL graphics_set_window_pos(
++    HWND hWnd, HWND hWndInsertAfter, int x, int y, int width, int height, UINT flags);
+ bool graphics_gitadora_has_dedicated_subscreen();
+ // The native GITADORA two-head D3D9 group uses the game's named SMALL
+ // device window for the native physical SMALL head. The game requests
+diff --git a/src/spice2x/hooks/graphics/graphics_udn.cpp b/src/spice2x/hooks/graphics/graphics_udn.cpp
+new file mode 100644
+index 0000000..9967ca8
+--- /dev/null
++++ b/src/spice2x/hooks/graphics/graphics_udn.cpp
+@@ -0,0 +1,225 @@
++#include "graphics_udn.h"
++
++#include <algorithm>
++#include <utility>
++
++#include "avs/game.h"
++#include "cfg/screen_resize.h"
++#include "hooks/graphics/graphics.h"
++#include "util/logging.h"
++#include "util/time.h"
++
++static bool UDN_INTERACTIVE_WINDOW_RESIZE = false;
++
++static bool udn_is_managed_window(HWND hWnd) {
++    return GRAPHICS_WINDOWED && avs::game::is_model("UDN") &&
++        GRAPHICS_HOOKED_WINDOW.has_value() && hWnd == GRAPHICS_HOOKED_WINDOW.value();
++}
++
++static bool udn_should_adjust_game_placement(HWND hWnd) {
++    return udn_is_managed_window(hWnd) && cfg::SCREENRESIZE != nullptr &&
++        cfg::SCREENRESIZE->enable_window_resize;
++}
++
++UINT graphics_udn_enforce_message() {
++    static const UINT message = RegisterWindowMessageW(
++        L"SpiceTools.UDN.EnforceWindow");
++    return message;
++}
++
++static bool udn_get_target_window_rect(HWND hWnd, RECT &target) {
++    if (!udn_is_managed_window(hWnd) || !GRAPHICS_WINDOW_SIZE.has_value()) {
++        return false;
++    }
++
++    const DWORD style =
++        ((DWORD) GetWindowLongPtrW(hWnd, GWL_STYLE) |
++         WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_POPUP;
++    const DWORD ex_style = (DWORD) GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
++    RECT frame {
++        0,
++        0,
++        (LONG) GRAPHICS_WINDOW_SIZE->first,
++        (LONG) GRAPHICS_WINDOW_SIZE->second,
++    };
++    AdjustWindowRectEx(&frame, style, GetMenu(hWnd) != nullptr, ex_style);
++    const int outer_width = frame.right - frame.left;
++    const int outer_height = frame.bottom - frame.top;
++
++    // graphics_load_windowed_parameters initializes these from -windowpos,
++    // while WM_MOVE keeps them synchronized after an interactive drag.
++    const int x = cfg::SCREENRESIZE->window_offset_x;
++    const int y = cfg::SCREENRESIZE->window_offset_y;
++    target = {x, y, x + outer_width, y + outer_height};
++    return true;
++}
++
++void graphics_udn_force_window(HWND hWnd) {
++    if (UDN_INTERACTIVE_WINDOW_RESIZE) {
++        return;
++    }
++
++    RECT target {};
++    RECT current {};
++    RECT client {};
++    if (!udn_get_target_window_rect(hWnd, target) ||
++        !GetWindowRect(hWnd, &current) || !GetClientRect(hWnd, &client)) {
++        return;
++    }
++
++    const DWORD style_before = (DWORD) GetWindowLongPtrW(hWnd, GWL_STYLE);
++    const DWORD style_after =
++        (style_before | WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_POPUP;
++    const int target_client_width = (int) GRAPHICS_WINDOW_SIZE->first;
++    const int target_client_height = (int) GRAPHICS_WINDOW_SIZE->second;
++    const bool wrong = IsZoomed(hWnd) || style_before != style_after ||
++        current.left != target.left || current.top != target.top ||
++        current.right != target.right || current.bottom != target.bottom ||
++        client.right - client.left != target_client_width ||
++        client.bottom - client.top != target_client_height;
++    if (!wrong) {
++        return;
++    }
++
++    // This function is invoked from the window's own message-queue hook. It is
++    // therefore safe to restore, restyle, and resize without blocking Unity's
++    // render thread.
++    if (IsZoomed(hWnd)) {
++        ShowWindow(hWnd, SW_RESTORE);
++    }
++    if (style_before != style_after) {
++        SetWindowLongPtrW(hWnd, GWL_STYLE, (LONG_PTR) style_after);
++    }
++    graphics_set_window_pos(
++        hWnd,
++        HWND_NOTOPMOST,
++        target.left,
++        target.top,
++        target.right - target.left,
++        target.bottom - target.top,
++        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
++    log_info(
++        "graphics",
++        "UDN owner-thread window restored: client {}x{}, outer {}x{} at ({}, {})",
++        target_client_width,
++        target_client_height,
++        target.right - target.left,
++        target.bottom - target.top,
++        target.left,
++        target.top);
++}
++
++static void udn_constrain_window_message(
++        HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
++    if (!udn_is_managed_window(hWnd)) {
++        return;
++    }
++
++    if (uMsg == WM_ENTERSIZEMOVE) {
++        UDN_INTERACTIVE_WINDOW_RESIZE = true;
++        return;
++    }
++    if (uMsg == WM_EXITSIZEMOVE) {
++        UDN_INTERACTIVE_WINDOW_RESIZE = false;
++        RECT client {};
++        if (GetClientRect(hWnd, &client) && GRAPHICS_WINDOW_SIZE.has_value()) {
++            GRAPHICS_WINDOW_SIZE = std::make_pair(
++                (uint32_t) std::max(1L, client.right - client.left),
++                (uint32_t) std::max(1L, client.bottom - client.top));
++        }
++        return;
++    }
++
++    if (uMsg == WM_STYLECHANGING &&
++        wParam == static_cast<WPARAM>(GWL_STYLE) && lParam != 0) {
++        auto styles = reinterpret_cast<STYLESTRUCT *>(lParam);
++        styles->styleNew =
++            (styles->styleNew | WS_OVERLAPPEDWINDOW | WS_VISIBLE) & ~WS_POPUP;
++        return;
++    }
++
++    if (uMsg != WM_WINDOWPOSCHANGING || lParam == 0 ||
++        UDN_INTERACTIVE_WINDOW_RESIZE || !GRAPHICS_WINDOW_SIZE.has_value()) {
++        return;
++    }
++
++    auto position = reinterpret_cast<WINDOWPOS *>(lParam);
++    const bool moves = (position->flags & SWP_NOMOVE) == 0;
++    const bool resizes = (position->flags & SWP_NOSIZE) == 0;
++    if (!moves && !resizes) {
++        return;
++    }
++
++    RECT target {};
++    if (!udn_get_target_window_rect(hWnd, target)) {
++        return;
++    }
++    const int client_width = (int) GRAPHICS_WINDOW_SIZE->first;
++    const int client_height = (int) GRAPHICS_WINDOW_SIZE->second;
++    const int outer_width = target.right - target.left;
++    const int outer_height = target.bottom - target.top;
++    const int target_x = target.left;
++    const int target_y = target.top;
++
++    const bool changed =
++        position->x != target_x || position->y != target_y ||
++        position->cx != outer_width || position->cy != outer_height;
++    position->flags &= ~(SWP_NOMOVE | SWP_NOSIZE);
++    position->x = target_x;
++    position->y = target_y;
++    position->cx = outer_width;
++    position->cy = outer_height;
++
++    static uint64_t last_log = 0;
++    const uint64_t now = get_system_milliseconds();
++    if (changed && now - last_log >= 1000) {
++        last_log = now;
++        log_info(
++            "graphics",
++            "UDN owner-thread window clamp: client {}x{}, outer {}x{} at ({}, {})",
++            client_width,
++            client_height,
++            outer_width,
++            outer_height,
++            target_x,
++            target_y);
++    }
++}
++
++bool graphics_udn_wndproc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
++    if (uMsg == graphics_udn_enforce_message()) {
++        graphics_udn_force_window(hWnd);
++        return true;
++    }
++
++    udn_constrain_window_message(hWnd, uMsg, wParam, lParam);
++    return false;
++}
++
++void graphics_udn_adjust_move_window(
++        HWND hWnd, int &x, int &y, int &width, int &height) {
++    if (!udn_should_adjust_game_placement(hWnd)) {
++        return;
++    }
++
++    x = cfg::SCREENRESIZE->window_offset_x;
++    y = cfg::SCREENRESIZE->window_offset_y;
++    width = cfg::SCREENRESIZE->client_width + cfg::SCREENRESIZE->window_deco_width;
++    height = cfg::SCREENRESIZE->client_height + cfg::SCREENRESIZE->window_deco_height;
++}
++
++void graphics_udn_adjust_set_window_pos(
++        HWND hWnd, int &x, int &y, int &width, int &height, UINT flags) {
++    if (!udn_should_adjust_game_placement(hWnd)) {
++        return;
++    }
++
++    if ((flags & SWP_NOMOVE) == 0) {
++        x = cfg::SCREENRESIZE->window_offset_x;
++        y = cfg::SCREENRESIZE->window_offset_y;
++    }
++    if ((flags & SWP_NOSIZE) == 0) {
++        width = cfg::SCREENRESIZE->client_width + cfg::SCREENRESIZE->window_deco_width;
++        height = cfg::SCREENRESIZE->client_height + cfg::SCREENRESIZE->window_deco_height;
++    }
++}
+diff --git a/src/spice2x/hooks/graphics/graphics_udn.h b/src/spice2x/hooks/graphics/graphics_udn.h
+new file mode 100644
+index 0000000..0147ac7
+--- /dev/null
++++ b/src/spice2x/hooks/graphics/graphics_udn.h
+@@ -0,0 +1,11 @@
++#pragma once
++
++#include <windows.h>
++
++UINT graphics_udn_enforce_message();
++void graphics_udn_force_window(HWND hWnd);
++bool graphics_udn_wndproc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
++void graphics_udn_adjust_move_window(
++    HWND hWnd, int &x, int &y, int &width, int &height);
++void graphics_udn_adjust_set_window_pos(
++    HWND hWnd, int &x, int &y, int &width, int &height, UINT flags);
+-- 
+2.55.0.windows.5
+

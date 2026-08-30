@@ -41,3 +41,30 @@ OpenVR is licensed under the BSD 3-Clause License. The SDK/runtime files are
 fetched into the ignored dependency cache and verified against the hashes in
 `dependency-lock.json`; they are not committed to this source tree. Packaged
 runtime directories include the OpenVR license text.
+
+## SPiKE
+
+`runtime/spike/anygear_spike/spike_model.py` contains a fixed-shape inference
+adaptation of the SPiKE ITOP-SIDE network. The source revision and published
+checkpoint are pinned in `dependency-lock.json`. SPiKE is licensed under the
+MIT License; its license text is preserved at
+`third_party/spike/LICENSE.MIT`.
+
+## Intel librealsense
+
+The D4xx/SPiKE package carries the official Windows x86-64 librealsense 2.50.0
+runtime extracted from Intel's pinned Unity package. The source archive,
+runtime, and output license are verified by size and SHA-256. librealsense is
+licensed under Apache License 2.0; its license accompanies the runtime.
+
+## ONNX Runtime DirectML worker
+
+The frozen D4xx/SPiKE worker redistributes pinned runtime components from ONNX
+Runtime DirectML 1.23.0, CPython 3.10.5, NumPy 2.2.6, PyInstaller 6.22.2, and
+setuptools. Voxel labeling uses connected-components-3d 4.0.0 under
+LGPL-3.0-or-later. The worker build copies the corresponding
+license files and ONNX Runtime third-party notice into the worker directory;
+the package script refuses an incomplete notice set.
+
+PyTorch 2.11.0 CPU and ONNX 1.22.0 are checkpoint-conversion dependencies only
+and are not included in release archives.

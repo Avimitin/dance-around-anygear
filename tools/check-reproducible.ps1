@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string] $ToolchainRoot = $env:ANYGEAR_TOOLCHAIN_ROOT,
-    [string] $KinectSdkRoot = $env:ANYGEAR_KINECT_SDK_ROOT
+    [string] $KinectSdkRoot = $env:ANYGEAR_KINECT_SDK_ROOT,
+    [string] $LibrealsenseIncludeDir = $env:ANYGEAR_LIBREALSENSE_INCLUDE_DIR
 )
 
 Set-StrictMode -Version Latest
@@ -30,6 +31,16 @@ if ($LASTEXITCODE -ne 0) {
     throw "OpenVR dependency verification failed with exit code $LASTEXITCODE."
 }
 $OpenVrRoot = (Resolve-Path -LiteralPath $OpenVrRoot).Path
+if ([string]::IsNullOrWhiteSpace($LibrealsenseIncludeDir)) {
+    $LibrealsenseIncludeDir = Join-Path $RepositoryRoot `
+        '.deps\librealsense\v2.50.0\include'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $LibrealsenseIncludeDir `
+        'librealsense2\rs.h') -PathType Leaf)) {
+    throw 'Pinned librealsense headers are absent.'
+}
+$LibrealsenseIncludeDir = (Resolve-Path -LiteralPath `
+    $LibrealsenseIncludeDir).Path
 if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) {
     throw 'Supply -ToolchainRoot or set ANYGEAR_TOOLCHAIN_ROOT.'
 }
@@ -75,23 +86,33 @@ foreach ($name in @('a', 'b')) {
         '-DANYGEAR_BUILD_TESTS=OFF',
         '-DANYGEAR_BUILD_WEBCAM=ON',
         '-DANYGEAR_BUILD_STEAMVR=ON',
+        '-DANYGEAR_BUILD_D4XX=ON',
+        '-DANYGEAR_BUILD_D4XX_MEDIAPIPE_EXPERIMENTAL=ON',
+        '-DANYGEAR_BUILD_D4XX_SPIKE=ON',
         "-DANYGEAR_KINECT_SDK_ROOT=$KinectSdkRoot",
-        "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot"
+        "-DANYGEAR_OPENVR_SDK_ROOT=$OpenVrRoot",
+        "-DANYGEAR_LIBREALSENSE_INCLUDE_DIR=$LibrealsenseIncludeDir"
     )
     Write-Host "[REPRO $name] configure"
     & $CmakeExe @ConfigureArguments
     if ($LASTEXITCODE -ne 0) { throw "CMake configure $name failed." }
     & $CmakeExe --build $BuildDirectory --target `
-        anygear_kinect anygear_webcam anygear_steamvr
+        anygear_kinect anygear_webcam anygear_steamvr anygear_d4xx `
+        anygear_d4xx_mediapipe_experimental anygear_d4xx_spike
     if ($LASTEXITCODE -ne 0) { throw "CMake build $name failed." }
     $HashSets += ,([ordered]@{
         kinect = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_kinect.dll') -Algorithm SHA256).Hash
         webcam = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_webcam.dll') -Algorithm SHA256).Hash
         steamvr = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_steamvr.dll') -Algorithm SHA256).Hash
+        d4xx = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_d4xx.dll') -Algorithm SHA256).Hash
+        d4xx_mediapipe_experimental = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_d4xx_mediapipe_experimental.dll') -Algorithm SHA256).Hash
+        d4xx_spike = (Get-FileHash -LiteralPath (Join-Path $BuildDirectory 'bin\dance_around_anygear_d4xx_spike.dll') -Algorithm SHA256).Hash
     })
 }
 
-foreach ($backend in @('kinect', 'webcam', 'steamvr')) {
+foreach ($backend in @(
+    'kinect', 'webcam', 'steamvr', 'd4xx',
+    'd4xx_mediapipe_experimental', 'd4xx_spike')) {
     if ($HashSets[0][$backend] -ne $HashSets[1][$backend]) {
         throw "Reproducibility check failed for $backend`: $($HashSets[0][$backend]) != $($HashSets[1][$backend])"
     }

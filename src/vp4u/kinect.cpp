@@ -34,9 +34,11 @@ namespace nui {
 using ::INuiFrameTexture;
 using ::NUI_IMAGE_FRAME;
 using ::NUI_IMAGE_RESOLUTION;
+using ::NUI_IMAGE_RESOLUTION_320x240;
 using ::NUI_IMAGE_RESOLUTION_640x480;
 using ::NUI_IMAGE_TYPE;
 using ::NUI_IMAGE_TYPE_COLOR;
+using ::NUI_IMAGE_TYPE_DEPTH_AND_PLAYER_INDEX;
 using ::NUI_LOCKED_RECT;
 using ::NUI_SKELETON_DATA;
 using ::NUI_SKELETON_FRAME;
@@ -195,9 +197,9 @@ static void format_clip_flags(DWORD flags, char* out, size_t out_size) {
     out[out_size - 1] = '\0';
 }
 
-// NUI positions are metric camera coordinates (+Y up, +Z depth, +X to the
-// camera's left in this right-handed system). Copy the raw values here; the
-// VP4U backend boundary converts X and applies configurable sensor extrinsics.
+// NUI positions are metric camera coordinates (+Y up and +Z depth). SDK 1.8's
+// projection maps +X to increasing depth-image X. Copy the raw values here;
+// the VP4U boundary separately applies its configurable view orientation.
 // Pixel coords are left at 0 (debug-only field).
 static void fill_pose(const nui::NUI_SKELETON_DATA& sk, PoseResult* out) {
     *out = PoseResult(); // zero all landmarks, valid=false until set below
@@ -344,6 +346,7 @@ struct KinectSource::Impl {
     KinectTrackingOptions tracking;
     NuiApi api;
     HANDLE colorStream = nullptr;
+    HANDLE depthStream = nullptr;
     std::atomic<bool> stop{false};
     std::thread worker;
     std::atomic<bool> haveFrame{false};
@@ -354,11 +357,24 @@ struct KinectSource::Impl {
     int width = 640, height = 480;     // NUI_IMAGE_RESOLUTION_640x480
     uint64_t colorFrameCount = 0;      // capture-worker thread only
     uint64_t lastColorCopyTick = 0;    // capture-worker thread only
+    std::mutex depthMtx;
+    std::condition_variable depthCv;
+    KinectDepthFrame depthFrame;
+    std::vector<std::uint16_t> writeDepth;
+    std::vector<std::uint8_t> writePlayerIndex;
+    std::uint64_t depthGeneration = 0;
+    std::atomic<bool> depthSeen{false};
+    std::atomic<std::uint64_t> depthTick{0};
+    std::uint64_t depthFrameCount = 0; // capture-worker thread only
     // latest skeleton (mapped), guarded by skMtx
     std::mutex skMtx;
     std::condition_variable skCv;
     PoseResult skel;
+    PoseResult prefilterSkel;
     uint64_t skGeneration = 0;
+    std::int64_t skHostTimeNs = 0;
+    std::int64_t skSensorTimeMs = 0;
+    std::uint32_t skUserIndex = 0;
     std::atomic<bool> skelSeen{false};
     std::atomic<uint64_t> skelTick{0};
     uint64_t skeletonFrameCount = 0;   // capture-worker thread only
@@ -394,6 +410,18 @@ struct KinectSource::Impl {
                 return false;
             }
         }
+        if (tracking.capture_depth) {
+            hr = api.NuiImageStreamOpen(
+                nui::NUI_IMAGE_TYPE_DEPTH_AND_PLAYER_INDEX,
+                nui::NUI_IMAGE_RESOLUTION_320x240,
+                0, 2, nullptr, &depthStream);
+            if (FAILED(hr)) {
+                logf("NuiImageStreamOpen(depth 320x240) failed: 0x%08lx",
+                     (unsigned long)hr);
+                api.NuiShutdown();
+                return false;
+            }
+        }
         hr = api.NuiSkeletonTrackingEnable(nullptr, 0);
         if (FAILED(hr)) {
             logf("NuiSkeletonTrackingEnable failed: 0x%08lx", (unsigned long)hr);
@@ -411,13 +439,18 @@ struct KinectSource::Impl {
         }
         frame.assign((size_t)width * height * 3, 0);
         writeFrame.assign((size_t)width * height * 3, 0);
+        if (tracking.capture_depth) {
+            writeDepth.assign(320u * 240u, 0);
+            writePlayerIndex.assign(320u * 240u, 0);
+        }
         logf(
-            "initialized (%s), VP4U_KINECT_NO_COLOR enabled=%d; "
+            "initialized (%s%s), VP4U_KINECT_NO_COLOR enabled=%d; "
             "VP4U_KINECT_LOW_LATENCY smoothing=%.2f correction=%.2f "
             "prediction=%.2f jitter=%.3f maxDeviation=%.3f; "
             "VP4U_KINECT_STABLE_BODY lock=%dms hold=%dms "
             "maxJointSpeed=%.1fm/s boneTolerance=%.0f%%",
             tracking.use_color ? "color 640x480 + skeleton" : "skeleton-only",
+            tracking.capture_depth ? " + depth 320x240" : "",
             (int)!tracking.use_color, tracking.smoothing, tracking.correction,
             tracking.prediction, tracking.jitter_radius,
             tracking.max_deviation_radius, tracking.skeleton_lock_ms,
@@ -431,6 +464,7 @@ struct KinectSource::Impl {
     void join() {
         stop = true;
         skCv.notify_all();
+        depthCv.notify_all();
         if (worker.joinable()) worker.join();
     }
 
@@ -484,6 +518,67 @@ struct KinectSource::Impl {
             }
         }
         tex->UnlockRect(0);
+    }
+
+    void copy_depth_frame(const nui::NUI_IMAGE_FRAME* frame_value,
+                          std::int64_t host_time_ns) {
+        nui::INuiFrameTexture* texture = frame_value->pFrameTexture;
+        if (!texture) return;
+        nui::NUI_LOCKED_RECT locked;
+        std::memset(&locked, 0, sizeof locked);
+        if (FAILED(texture->LockRect(0, &locked, nullptr, 0))) return;
+        if (!locked.pBits) {
+            texture->UnlockRect(0);
+            return;
+        }
+        constexpr int depth_width = 320;
+        constexpr int depth_height = 240;
+        constexpr int row_bytes = depth_width * (int)sizeof(std::uint16_t);
+        bool copied = false;
+        if (locked.Pitch >= row_bytes &&
+            locked.size >= locked.Pitch * depth_height) {
+            for (int y = 0; y < depth_height; ++y) {
+                const std::uint8_t* source =
+                    locked.pBits + (std::size_t)y * locked.Pitch;
+                std::uint16_t* destination =
+                    writeDepth.data() + (std::size_t)y * depth_width;
+                for (int x = 0; x < depth_width; ++x) {
+                    std::uint16_t packed = 0;
+                    std::memcpy(&packed,
+                                source + (std::size_t)x * sizeof packed,
+                                sizeof packed);
+                    destination[x] = NuiDepthPixelToDepth(packed);
+                    writePlayerIndex[(std::size_t)y * depth_width + x] =
+                        (std::uint8_t)NuiDepthPixelToPlayerIndex(packed);
+                }
+            }
+            copied = true;
+        }
+        texture->UnlockRect(0);
+        if (!copied) return;
+
+        const std::uint64_t now = GetTickCount64();
+        {
+            std::lock_guard<std::mutex> lock(depthMtx);
+            depthFrame.sequence = frame_value->dwFrameNumber;
+            depthFrame.host_time_ns = host_time_ns;
+            depthFrame.sensor_time_ms = frame_value->liTimeStamp.QuadPart;
+            depthFrame.width = depth_width;
+            depthFrame.height = depth_height;
+            depthFrame.depth_mm.swap(writeDepth);
+            depthFrame.player_index.swap(writePlayerIndex);
+            writeDepth.resize((std::size_t)depth_width * depth_height);
+            writePlayerIndex.resize((std::size_t)depth_width * depth_height);
+            ++depthGeneration;
+            depthFrame.generation = depthGeneration;
+        }
+        depthSeen = true;
+        depthTick = now;
+        ++depthFrameCount;
+        if (depthFrameCount == 1) {
+            logf("first native depth frame received (320x240 Z16 millimetres)");
+        }
+        depthCv.notify_all();
     }
 
     const nui::NUI_SKELETON_DATA* select_skeleton(
@@ -689,6 +784,11 @@ struct KinectSource::Impl {
     }
 
     void on_skeleton_frame(nui::NUI_SKELETON_FRAME* sf) {
+        const std::int64_t hostTimeNs = std::chrono::duration_cast<
+            std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                                            .count();
+        const nui::NUI_SKELETON_FRAME prefilterFrame = *sf;
         const nui::NUI_TRANSFORM_SMOOTH_PARAMETERS smooth = {
             tracking.smoothing,
             tracking.correction,
@@ -710,6 +810,17 @@ struct KinectSource::Impl {
             stabilize_skeleton(&stableSkeleton, now);
         }
         const nui::NUI_SKELETON_DATA* tracked = selected ? &stableSkeleton : nullptr;
+        const nui::NUI_SKELETON_DATA* prefilterTracked = nullptr;
+        if (selected) {
+            for (int index = 0; index < nui::kSkeletonCount; ++index) {
+                const auto& candidate = prefilterFrame.SkeletonData[index];
+                if (candidate.eTrackingState == nui::NUI_SKELETON_TRACKED &&
+                    candidate.dwTrackingID == selected->dwTrackingID) {
+                    prefilterTracked = &candidate;
+                    break;
+                }
+            }
+        }
 
         const bool bodyTracked = tracked != nullptr;
         const DWORD trackingId = tracked ? tracked->dwTrackingID : 0;
@@ -743,10 +854,16 @@ struct KinectSource::Impl {
         lastTrackingId = trackingId;
 
         PoseResult pr; // valid=false when nobody is tracked
+        PoseResult prefilterPose;
         if (tracked) fill_pose(*tracked, &pr);
+        if (prefilterTracked) fill_pose(*prefilterTracked, &prefilterPose);
         {
             std::lock_guard<std::mutex> lk(skMtx);
             skel = pr;
+            prefilterSkel = prefilterPose;
+            skHostTimeNs = hostTimeNs;
+            skSensorTimeMs = sf->liTimeStamp.QuadPart;
+            skUserIndex = tracked ? tracked->dwUserIndex : 0;
             ++skGeneration;
         }
         skelSeen = true;
@@ -757,6 +874,47 @@ struct KinectSource::Impl {
     void run() {
         int err_log = 0;
         while (!stop) {
+            if (tracking.capture_depth) {
+                const nui::NUI_IMAGE_FRAME* depth = nullptr;
+                HRESULT hr = api.NuiImageStreamGetNextFrame(
+                    depthStream, 100, &depth);
+                if (SUCCEEDED(hr) && depth) {
+                    const std::int64_t hostTimeNs =
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+                    copy_depth_frame(depth, hostTimeNs);
+                    api.NuiImageStreamReleaseFrame(depthStream, depth);
+                } else if (FAILED(hr) && hr != E_NUI_FRAME_NO_DATA) {
+                    if (++err_log % 50 == 1) {
+                        logf("NuiImageStreamGetNextFrame(depth): 0x%08lx",
+                             (unsigned long)hr);
+                    }
+                }
+
+                // Depth paces this research-only loop. Drain the streams that
+                // share the same Kinect frame clock without another blocking
+                // wait, keeping their host timestamps within one iteration.
+                if (tracking.use_color) {
+                    const nui::NUI_IMAGE_FRAME* color = nullptr;
+                    hr = api.NuiImageStreamGetNextFrame(colorStream, 0, &color);
+                    if (SUCCEEDED(hr) && color) {
+                        ++colorFrameCount;
+                        const std::uint64_t now = GetTickCount64();
+                        const std::uint64_t colorInterval =
+                            (std::uint64_t)std::max(1, 1000 / tracking.color_fps);
+                        if (!haveFrame || now - lastColorCopyTick >= colorInterval) {
+                            copy_color_frame(color);
+                            lastColorCopyTick = now;
+                        }
+                        api.NuiImageStreamReleaseFrame(colorStream, color);
+                    }
+                }
+                nui::NUI_SKELETON_FRAME skeleton;
+                hr = api.NuiSkeletonGetNextFrame(0, &skeleton);
+                if (SUCCEEDED(hr)) on_skeleton_frame(&skeleton);
+                continue;
+            }
             if (!tracking.use_color) {
                 // Skeleton tracking has its own 30 Hz stream; blocking on it
                 // removes all RGB acquisition/conversion and gives the pose
@@ -823,6 +981,9 @@ KinectSource::~KinectSource() {
 
 bool KinectSource::is_real_camera() const { return impl_->haveFrame; }
 bool KinectSource::has_color_stream() const { return impl_->tracking.use_color; }
+bool KinectSource::has_depth_stream() const {
+    return impl_->tracking.capture_depth;
+}
 int KinectSource::native_width() const { return impl_->width; }
 int KinectSource::native_height() const { return impl_->height; }
 
@@ -865,7 +1026,11 @@ bool KinectSource::get_skeleton(PoseResult* out) {
 }
 
 bool KinectSource::wait_for_skeleton(PoseResult* out, uint64_t* generation,
-                                     int timeout_ms) {
+                                     int timeout_ms,
+                                     std::int64_t* host_time_ns,
+                                     std::uint32_t* user_index,
+                                     PoseResult* prefilter_out,
+                                     std::int64_t* sensor_time_ms) {
     if (!out || !generation) return false;
     timeout_ms = std::clamp(timeout_ms, 1, 2000);
     std::unique_lock<std::mutex> lk(impl_->skMtx);
@@ -876,7 +1041,28 @@ bool KinectSource::wait_for_skeleton(PoseResult* out, uint64_t* generation,
     if (!woke || impl_->skGeneration == *generation) return false;
     *generation = impl_->skGeneration;
     *out = impl_->skel;
+    if (host_time_ns) *host_time_ns = impl_->skHostTimeNs;
+    if (user_index) *user_index = impl_->skUserIndex;
+    if (prefilter_out) *prefilter_out = impl_->prefilterSkel;
+    if (sensor_time_ms) *sensor_time_ms = impl_->skSensorTimeMs;
     return GetTickCount64() - impl_->skelTick.load() <= 2000;
+}
+
+bool KinectSource::wait_for_depth(KinectDepthFrame* out,
+                                  std::uint64_t* generation,
+                                  int timeout_ms) {
+    if (!out || !generation || !impl_->tracking.capture_depth) return false;
+    timeout_ms = std::clamp(timeout_ms, 1, 2000);
+    std::unique_lock<std::mutex> lock(impl_->depthMtx);
+    const bool woke = impl_->depthCv.wait_for(
+        lock, std::chrono::milliseconds(timeout_ms), [&] {
+            return impl_->stop.load() || impl_->depthGeneration != *generation;
+        });
+    if (!woke || impl_->depthGeneration == *generation) return false;
+    *generation = impl_->depthGeneration;
+    *out = impl_->depthFrame;
+    return impl_->depthSeen.load() &&
+           GetTickCount64() - impl_->depthTick.load() <= 2000;
 }
 
 } // namespace vp4u

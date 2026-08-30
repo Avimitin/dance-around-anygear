@@ -32,7 +32,24 @@ struct KinectTrackingOptions {
     float max_joint_speed_mps = 8.0f;
     float bone_length_tolerance = 0.35f;
     bool use_color = false;
+    // The game backend leaves this disabled. Research capture can opt in to
+    // the native 320x240 depth stream without enabling RGB processing.
+    bool capture_depth = false;
     int color_fps = 15;
+};
+
+struct KinectDepthFrame {
+    std::uint64_t sequence = 0;
+    std::uint64_t generation = 0;
+    std::int64_t host_time_ns = 0;
+    // Kinect frame clock in milliseconds since sensor initialization.
+    std::int64_t sensor_time_ms = 0;
+    int width = 0;
+    int height = 0;
+    // Millimetres with the Kinect player-index bits removed.
+    std::vector<std::uint16_t> depth_mm;
+    // NUI's hardware player segmentation (0 background, 1..6 tracked slot).
+    std::vector<std::uint8_t> player_index;
 };
 
 // Singleton around the single Kinect v1 sensor (NuiInitialize is process-global).
@@ -65,10 +82,20 @@ public:
     // Wait until NUI publishes a skeleton frame newer than `generation`.
     // A frame with out->valid=false still counts: it tells the callback consumer
     // that tracking was lost without repeatedly submitting stale poses.
-    bool wait_for_skeleton(PoseResult* out, uint64_t* generation, int timeout_ms);
+    bool wait_for_skeleton(PoseResult* out, uint64_t* generation, int timeout_ms,
+                           std::int64_t* host_time_ns = nullptr,
+                           std::uint32_t* user_index = nullptr,
+                           PoseResult* prefilter_out = nullptr,
+                           std::int64_t* sensor_time_ms = nullptr);
+
+    // Wait for a native depth frame newer than `generation`. This path exists
+    // for offline sensor calibration and is inactive in the game backend.
+    bool wait_for_depth(KinectDepthFrame* out, std::uint64_t* generation,
+                        int timeout_ms);
 
     bool is_real_camera() const;   // color frames are arriving
     bool has_color_stream() const; // false for skeleton-only low-load mode
+    bool has_depth_stream() const;
     int native_width() const;
     int native_height() const;
 
