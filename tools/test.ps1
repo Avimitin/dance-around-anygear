@@ -23,6 +23,8 @@ $ErrorActionPreference = 'Stop'
 $RepositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $BuildRoot = Join-Path $RepositoryRoot 'build'
 $BinRoot = Join-Path $BuildRoot 'bin'
+Write-Host '[TEST] Launcher e-amusement service selection...'
+& (Join-Path $PSScriptRoot 'test-launcher-generator.ps1')
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot 'build.ps1') -ToolchainRoot $ToolchainRoot
     if (-not $?) {

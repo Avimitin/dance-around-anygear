@@ -143,6 +143,10 @@ The generated BAT supplies the Spice-owned arguments:
 -ea -cardio -w -keyboardnav -k dance_around_anygear_kinect.dll
 ```
 
+For an external e-amusement service, pass `-EamuseMode external` and
+`-EamuseUrl 'http://127.0.0.1:8083/'` to `install-local.ps1`. The generated BAT
+then uses Spice `-url` and omits the mutually exclusive local `-ea` stub.
+
 The reviewed Spice patch auto-detects UDN and assigns its 1 GiB heap default,
 so the generated launcher does not repeat `-udn` or `-h`.
 

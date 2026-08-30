@@ -6,6 +6,9 @@ param(
     [string] $Backend = 'kinect',
     [string] $WindowSize,
     [string] $WindowPosition,
+    [ValidateSet('spice-local', 'external')]
+    [string] $EamuseMode = 'spice-local',
+    [string] $EamuseUrl,
     [string] $OutputName,
     [switch] $Force
 )
@@ -33,6 +36,17 @@ foreach ($Pair in @(
         -not [uint32]::TryParse($Parts[1], [ref]$Second) -or
         ($Pair.NonZero -and ($First -eq 0 -or $Second -eq 0))) {
         throw "-$($Pair.Name) must be two unsigned integers separated by a comma."
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($EamuseUrl)) {
+    [Uri] $ParsedEamuseUrl = $null
+    if (-not [Uri]::TryCreate($EamuseUrl, [UriKind]::Absolute, [ref]$ParsedEamuseUrl) -or
+        $ParsedEamuseUrl.Scheme -notin @('http', 'https')) {
+        throw '-EamuseUrl must be an absolute HTTP or HTTPS URL.'
+    }
+    if ($EamuseMode -ne 'external') {
+        throw '-EamuseUrl requires -EamuseMode external.'
     }
 }
 
@@ -100,6 +114,15 @@ if (-not [string]::IsNullOrWhiteSpace($WindowSize)) {
 if (-not [string]::IsNullOrWhiteSpace($WindowPosition)) {
     $WindowArguments += " -windowpos $WindowPosition"
 }
+$EamuseArguments = if ($EamuseMode -eq 'spice-local') {
+    ' -ea'
+}
+elseif (-not [string]::IsNullOrWhiteSpace($EamuseUrl)) {
+    " -url `"$EamuseUrl`""
+}
+else {
+    ''
+}
 
 $Bat = @"
 @echo off
@@ -109,7 +132,7 @@ setlocal EnableExtensions
 set "PLUGIN_DIR=%~dp0game\dancearound_data\plugins\x86_64"
 set "PATH=%PLUGIN_DIR%;%PATH%"
 pushd "%~dp0"
-"game\dancearound.exe" -runas user -modules modules -ea -cardio -w$WindowArguments -keyboardnav -loglevel info -k "%~dp0$PluginName" %*
+"game\dancearound.exe" -runas user -modules modules$EamuseArguments -cardio -w$WindowArguments -keyboardnav -loglevel info -k "%~dp0$PluginName" %*
 set "RESULT=%ERRORLEVEL%"
 popd
 exit /b %RESULT%
@@ -121,6 +144,10 @@ exit /b %RESULT%
 
 Write-Host "[OK] Launcher generated (not executed): $OutputPath"
 Write-Host "     Runtime customization required from the user: -k $PluginName"
+Write-Host "     E-amusement mode: $EamuseMode"
+if ($EamuseUrl) {
+    Write-Host "     E-amusement URL: $EamuseUrl"
+}
 if ($WindowArguments) {
     Write-Host "     Window override: -w$WindowArguments"
 }

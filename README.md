@@ -173,6 +173,21 @@ Spice's existing window arguments:
 This emits `-w -windowsize 960,1626 -windowpos 120,40`. Without these optional
 values, DANCE aROUND keeps Spice's aspect-correct centered default.
 
+By default, generated launchers use Spice's local `-ea` service. To connect a
+separate e-amusement server, select external mode and provide its base URL:
+
+```powershell
+./tools/install-local.ps1 `
+  -CabinetRoot C:\cabinet `
+  -Backend d4xx-spike `
+  -GenerateLauncher `
+  -EamuseMode external `
+  -EamuseUrl 'http://127.0.0.1:8083/'
+```
+
+This emits `-url http://127.0.0.1:8083/` and omits `-ea`, so only one service
+owns the e-amusement connection.
+
 For D4xx/SPiKE placement and model diagnostics, the local live viewer displays
 both raw depth streams, production-isolated point clouds, and predicted
 skeletons without starting Unity. See the

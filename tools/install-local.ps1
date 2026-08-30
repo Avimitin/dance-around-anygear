@@ -14,6 +14,9 @@ param(
     [string] $CudaRoot,
     [string] $WindowSize,
     [string] $WindowPosition,
+    [ValidateSet('spice-local', 'external')]
+    [string] $EamuseMode = 'spice-local',
+    [string] $EamuseUrl,
     [switch] $GenerateLauncher
 )
 
@@ -242,12 +245,16 @@ if ($GenerateLauncher) {
     $LauncherArguments = @{
         CabinetRoot = $CabinetRoot
         Backend = $Backend
+        EamuseMode = $EamuseMode
     }
     if (-not [string]::IsNullOrWhiteSpace($WindowSize)) {
         $LauncherArguments.WindowSize = $WindowSize
     }
     if (-not [string]::IsNullOrWhiteSpace($WindowPosition)) {
         $LauncherArguments.WindowPosition = $WindowPosition
+    }
+    if (-not [string]::IsNullOrWhiteSpace($EamuseUrl)) {
+        $LauncherArguments.EamuseUrl = $EamuseUrl
     }
     & (Join-Path $PSScriptRoot 'generate-launcher.ps1') @LauncherArguments
 }
